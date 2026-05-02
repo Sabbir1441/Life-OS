@@ -1,0 +1,32 @@
+:root {
+  --bg: #0a0a0f;
+  --bg2: #111118;
+  --bg3: #1a1a25;
+  --bg4: #22223a;
+  --border: rgba(255,255,255,0.07);
+  --border2: rgba(255,255,255,0.12);
+  --text: #f0f0f8;
+  --text2: #9090b0;
+  --text3: #5a5a7a;
+  --accent: #7c6fff;
+  --accent2: #a78bfa;
+  --accent-glow: rgba(124,111,255,0.15);
+  --green: #34d399;
+  --red: #f87171;
+  --amber: #fbbf24;
+  --blue: #60a5fa;
+  --pink: #f472b6;
+  --teal: #2dd4bf;
+  --radius: 14px;
+  --radius-sm: 8px;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; background: var(--bg); color: var(--text); font-size: 14px; }
+
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--bg4); border-radius: 2px; }
+
+input, select, textarea, button { font-family: inherit; }
+a { color: inherit; text-decoration: none; }
