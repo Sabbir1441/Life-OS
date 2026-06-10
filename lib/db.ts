@@ -15,6 +15,10 @@ export async function getExpenses(uid: string) {
   const snap = await getDocs(q);
   return snap.docs.map(d => ({ id: d.id, ...d.data() }));
 }
+export async function updateExpense(uid: string, id: string, data: Record<string, unknown>) {
+  return updateDoc(doc(db, "users", uid, "expenses", id), data);
+}
+
 export async function deleteExpense(uid: string, id: string) {
   return deleteDoc(doc(db, "users", uid, "expenses", id));
 }
@@ -31,6 +35,23 @@ export async function getIncome(uid: string) {
 }
 export async function deleteIncome(uid: string, id: string) {
   return deleteDoc(doc(db, "users", uid, "income", id));
+}
+
+// ─── SUBSCRIPTIONS ───────────────────────────────────
+export async function addSubscription(uid: string, data: Record<string, unknown>) {
+  return addDoc(collection(db, "users", uid, "subscriptions"), {
+    ...data,
+    createdAt: serverTimestamp(),
+  });
+}
+
+export async function getSubscriptions(uid: string) {
+  const snap = await getDocs(collection(db, "users", uid, "subscriptions"));
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+}
+
+export async function deleteSubscription(uid: string, id: string) {
+  return deleteDoc(doc(db, "users", uid, "subscriptions", id));
 }
 
 // ─── BUDGET ─────────────────────────────────────────

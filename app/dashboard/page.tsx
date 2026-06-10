@@ -11,6 +11,7 @@ type Goal = { id: string; name: string; emoji: string; target: number; current: 
 type Task = { id: string; name: string; time: string; dur: number; cat: string; done: boolean };
 type Habit = { id: string; name: string; freq: number; color: string };
 type MoodLog = { id: string; mood: number; label: string; note: string; energy: number; date: string };
+type Subscription = { id: string; name: string; amount: number; cycle: "monthly" | "yearly"; note?: string };
 
 // ─── HELPERS ─────────────────────────────────────────
 const fmt = (n: number) => "৳" + Math.round(n).toLocaleString();
@@ -19,9 +20,10 @@ const thisMonth = () => { const d = new Date(); return `${d.getFullYear()}-${Str
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 const catColor = (cat: string) => ({ Food:"#7c6fff",Transport:"#2dd4bf",Bills:"#fbbf24",Shopping:"#f472b6",Health:"#34d399",Education:"#60a5fa",Entertainment:"#f87171" }[cat] || "#888");
 const catTag = (cat: string) => ({ Food:"food",Transport:"transport",Bills:"bills",Shopping:"shopping",Health:"health",Education:"education",Entertainment:"entertainment" }[cat] || "custom");
+const subMonthly = (s: Subscription) => (s.cycle === "yearly" ? s.amount / 12 : s.amount);
 
 export default function Dashboard() {
-  const { user, loading, logout } = useAuth();
+  const { user, loading, logout, updateDisplayName } = useAuth();
   const router = useRouter();
 
   const [activePage, setActivePage] = useState("dashboard");
@@ -33,7 +35,12 @@ export default function Dashboard() {
   const [habits, setHabits] = useState<Habit[]>([]);
   const [habitLogs, setHabitLogs] = useState<Record<string,string[]>>({});
   const [moods, setMoods] = useState<MoodLog[]>([]);
+  const [subscriptions, setSubscriptions] = useState<Subscription[]>([]);
+  const [settingsDisplayName, setSettingsDisplayName] = useState("");
+  const [profileBio, setProfileBio] = useState("");
+  const [settingsSaving, setSettingsSaving] = useState(false);
   const [dataLoading, setDataLoading] = useState(true);
+  const [loadError, setLoadError] = useState<"permissions" | "other" | null>(null);
 
   // AI
   const [aiMessages, setAiMessages] = useState<{role:string;content:string}[]>([{role:"ai",content:"Assalamu alaikum! Ami tomar LifeOS AI advisor 🙌\n\nTomar income, expense, routine — sob analyze kore advice dite pari. Ki jante chao?"}]);
@@ -46,7 +53,9 @@ export default function Dashboard() {
 
   // Form states
   const [expForm, setExpForm] = useState({ amount:"", cat:"Food", desc:"", date:todayStr(), method:"Cash" });
+  const [expenseEditId, setExpenseEditId] = useState<string | null>(null);
   const [incForm, setIncForm] = useState({ name:"", amount:"", type:"fixed" });
+  const [subForm, setSubForm] = useState({ name:"", amount:"", cycle:"monthly" as "monthly"|"yearly", note:"" });
   const [goalForm, setGoalForm] = useState({ name:"", emoji:"🎯", target:"", current:"" });
   const [taskForm, setTaskForm] = useState({ name:"", time:"09:00", dur:"60", cat:"purple" });
   const [habitForm, setHabitForm] = useState({ name:"", freq:"7", color:"var(--accent)" });
@@ -59,25 +68,45 @@ export default function Dashboard() {
   const loadData = useCallback(async () => {
     if (!user) return;
     setDataLoading(true);
-    const [exps, incs, bud, gls, tsk, hab, hlogs, mds] = await Promise.all([
-      DB.getExpenses(user.uid),
-      DB.getIncome(user.uid),
-      DB.getBudget(user.uid),
-      DB.getGoals(user.uid),
-      DB.getTasks(user.uid),
-      DB.getHabits(user.uid),
-      DB.getHabitLogs(user.uid),
-      DB.getMoods(user.uid),
-    ]);
-    setExpenses(exps as Expense[]);
-    setIncome(incs as Income[]);
-    setBudget(bud as Record<string,number>);
-    setGoals(gls as Goal[]);
-    setTasks(tsk as Task[]);
-    setHabits(hab as Habit[]);
-    setHabitLogs(hlogs as Record<string,string[]>);
-    setMoods(mds as MoodLog[]);
-    setDataLoading(false);
+    setLoadError(null);
+    try {
+      const [exps, incs, subs, bud, gls, tsk, hab, hlogs, mds, prof] = await Promise.all([
+        DB.getExpenses(user.uid),
+        DB.getIncome(user.uid),
+        DB.getSubscriptions(user.uid),
+        DB.getBudget(user.uid),
+        DB.getGoals(user.uid),
+        DB.getTasks(user.uid),
+        DB.getHabits(user.uid),
+        DB.getHabitLogs(user.uid),
+        DB.getMoods(user.uid),
+        DB.getProfile(user.uid),
+      ]);
+      setExpenses(exps as Expense[]);
+      setIncome(incs as Income[]);
+      const rawSubs = subs as Record<string, unknown>[];
+      setSubscriptions(rawSubs.map((r) => ({
+        id: r.id as string,
+        name: String(r.name ?? ""),
+        amount: typeof r.amount === "number" ? r.amount : parseFloat(String(r.amount)) || 0,
+        cycle: r.cycle === "yearly" ? "yearly" : "monthly",
+        note: typeof r.note === "string" ? r.note : undefined,
+      })));
+      setBudget(bud as Record<string,number>);
+      setGoals(gls as Goal[]);
+      setTasks(tsk as Task[]);
+      setHabits(hab as Habit[]);
+      setHabitLogs(hlogs as Record<string,string[]>);
+      setMoods(mds as MoodLog[]);
+      const p = prof as Record<string, unknown>;
+      setProfileBio(typeof p.bio === "string" ? p.bio : "");
+      setSettingsDisplayName(user.displayName || (typeof p.displayName === "string" ? p.displayName : "") || "");
+    } catch (e: unknown) {
+      const code = typeof e === "object" && e && "code" in e ? String((e as { code?: string }).code) : "";
+      setLoadError(code === "permission-denied" ? "permissions" : "other");
+    } finally {
+      setDataLoading(false);
+    }
   }, [user]);
 
   useEffect(() => {
@@ -85,21 +114,49 @@ export default function Dashboard() {
     if (user) loadData();
   }, [user, loading, router, loadData]);
 
+  useEffect(() => {
+    if (!modal) setExpenseEditId(null);
+  }, [modal]);
+
   // ─── COMPUTED ───────────────────────────────────────
   const totalIncome = income.reduce((s,i) => s+i.amount, 0);
   const monthExp = expenses.filter(e => e.date?.startsWith(thisMonth()));
   const totalSpent = monthExp.reduce((s,e) => s+e.amount, 0);
   const remaining = totalIncome - totalSpent;
   const todayDoneHabits = habits.filter(h => habitLogs[h.id]?.includes(todayStr())).length;
+  const totalSubMonthly = subscriptions.reduce((s, sub) => s + subMonthly(sub), 0);
 
   // ─── ACTIONS ────────────────────────────────────────
-  async function handleAddExpense() {
+  async function handleSaveExpense() {
     if (!user || !expForm.amount) return;
     const newExp = { amount: parseFloat(expForm.amount), cat: expForm.cat, desc: expForm.desc || expForm.cat, date: expForm.date, method: expForm.method };
-    await DB.addExpense(user.uid, newExp);
+    if (expenseEditId) {
+      await DB.updateExpense(user.uid, expenseEditId, newExp);
+    } else {
+      await DB.addExpense(user.uid, newExp);
+    }
     setExpForm({ amount:"", cat:"Food", desc:"", date:todayStr(), method:"Cash" });
+    setExpenseEditId(null);
     setModal(null);
     loadData();
+  }
+
+  function openNewExpenseModal() {
+    setExpenseEditId(null);
+    setExpForm({ amount:"", cat:"Food", desc:"", date:todayStr(), method:"Cash" });
+    setModal("expense");
+  }
+
+  function openEditExpenseModal(e: Expense) {
+    setExpenseEditId(e.id);
+    setExpForm({
+      amount: String(e.amount),
+      cat: e.cat,
+      desc: e.desc,
+      date: e.date,
+      method: e.method || "Cash",
+    });
+    setModal("expense");
   }
 
   async function handleDeleteExpense(id: string) {
@@ -120,6 +177,39 @@ export default function Dashboard() {
     if (!user) return;
     await DB.deleteIncome(user.uid, id);
     setIncome(prev => prev.filter(i => i.id !== id));
+  }
+
+  async function handleAddSubscription() {
+    if (!user || !subForm.name.trim() || !subForm.amount) return;
+    await DB.addSubscription(user.uid, {
+      name: subForm.name.trim(),
+      amount: parseFloat(subForm.amount),
+      cycle: subForm.cycle,
+      note: subForm.note.trim() || undefined,
+    });
+    setSubForm({ name:"", amount:"", cycle:"monthly", note:"" });
+    setModal(null);
+    loadData();
+  }
+
+  async function handleDeleteSubscription(id: string) {
+    if (!user) return;
+    await DB.deleteSubscription(user.uid, id);
+    setSubscriptions((prev) => prev.filter((s) => s.id !== id));
+  }
+
+  async function handleSaveSettings() {
+    if (!user) return;
+    const dn = settingsDisplayName.trim();
+    setSettingsSaving(true);
+    try {
+      await updateDisplayName(dn);
+      await DB.saveProfile(user.uid, { displayName: dn, bio: profileBio.trim() });
+      alert("Profile save hoyeche ✓");
+    } catch {
+      alert("Save hoyni — abar try koro");
+    }
+    setSettingsSaving(false);
   }
 
   async function handleSaveBudget() {
@@ -221,7 +311,7 @@ export default function Dashboard() {
     monthExp.forEach(e => { cats[e.cat] = (cats[e.cat]||0) + e.amount; });
 
     const system = `You are a friendly personal finance and life advisor for a Bangladeshi user. Speak in Banglish (Bangla + English mixed). Be like a smart helpful friend.
-User data: Income ${fmt(totalIncome)} from ${income.length} sources. Spent this month: ${fmt(totalSpent)} (${totalIncome ? Math.round(totalSpent/totalIncome*100) : 0}% of income). Remaining: ${fmt(Math.max(0,remaining))}. Top spending: ${JSON.stringify(cats)}. Savings goals: ${goals.map(g=>g.name+"("+Math.round(g.current/g.target*100)+"%done)").join(", ")||"none"}. Active habits: ${habits.map(h=>h.name).join(", ")||"none"}. Tasks: ${tasks.length}.
+User data: Income ${fmt(totalIncome)} from ${income.length} sources. Spent this month: ${fmt(totalSpent)} (${totalIncome ? Math.round(totalSpent/totalIncome*100) : 0}% of income). Remaining: ${fmt(Math.max(0,remaining))}. Top spending: ${JSON.stringify(cats)}. Subscriptions (~per month): ${fmt(totalSubMonthly)} (${subscriptions.length} plans). Savings goals: ${goals.map(g=>g.name+"("+Math.round(g.current/g.target*100)+"%done)").join(", ")||"none"}. Active habits: ${habits.map(h=>h.name).join(", ")||"none"}. Tasks: ${tasks.length}.
 Give practical, specific, actionable advice. Be encouraging. Keep responses concise. Use emojis occasionally.`;
 
     const newHistory = [...aiHistory, userMsg];
@@ -251,7 +341,7 @@ Give practical, specific, actionable advice. Be encouraging. Keep responses conc
     setReportLoading(true);
     const cats: Record<string,number> = {};
     monthExp.forEach(e => { cats[e.cat] = (cats[e.cat]||0) + e.amount; });
-    const prompt = `User financial data this month: Income: ${fmt(totalIncome)}, Spent: ${fmt(totalSpent)}, Remaining: ${fmt(totalIncome-totalSpent)}, Categories: ${JSON.stringify(cats)}, Goals: ${goals.length}, Habits: ${habits.length}. Friendly financial advisor hisebe 3-4 paragraph analysis dao. Banglish-e likho. Specific advice dao — kothay boro khoroch, ki improve korte hobe, savings tips. Bullet points use koro.`;
+    const prompt = `User financial data this month: Income: ${fmt(totalIncome)}, Spent: ${fmt(totalSpent)}, Remaining: ${fmt(totalIncome-totalSpent)}, Subscriptions (~monthly): ${fmt(totalSubMonthly)} (${subscriptions.length} items), Categories: ${JSON.stringify(cats)}, Goals: ${goals.length}, Habits: ${habits.length}. Friendly financial advisor hisebe 3-4 paragraph analysis dao. Banglish-e likho. Specific advice dao — kothay boro khoroch, ki improve korte hobe, savings tips. Bullet points use koro.`;
     try {
       const res = await fetch("/api/ai", {
         method: "POST",
@@ -272,17 +362,56 @@ Give practical, specific, actionable advice. Be encouraging. Keep responses conc
     );
   }
 
+  if (loadError) {
+    return (
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"center", minHeight:"100vh", background:"var(--bg)", padding:24 }}>
+        <div style={{ maxWidth:480, background:"var(--bg2)", border:"1px solid var(--border2)", borderRadius:16, padding:28 }}>
+          <div style={{ fontSize:18, fontWeight:600, marginBottom:8, color:loadError === "permissions" ? "var(--red)" : "var(--text)" }}>
+            {loadError === "permissions" ? "Firestore permission denied" : "Data load hoyni"}
+          </div>
+          <p style={{ fontSize:13, color:"var(--text2)", lineHeight:1.6, marginBottom:16 }}>
+            {loadError === "permissions"
+              ? "Firebase Firestore Rules e logged-in user ke nijer data pathate allow kora hoyni. Test mode expire holeo ei error ashe."
+              : "Network ba server problem hote pare. Abar try koro."}
+          </p>
+          {loadError === "permissions" && (
+            <div style={{ fontSize:11, fontFamily:"monospace", background:"var(--bg3)", border:"1px solid var(--border)", borderRadius:8, padding:14, color:"var(--text2)", lineHeight:1.5, marginBottom:16, whiteSpace:"pre-wrap" }}>
+{`Firebase Console → Firestore → Rules → paste koro:
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /users/{userId}/{document=**} {
+      allow read, write: if request.auth != null
+        && request.auth.uid == userId;
+    }
+  }
+}
+
+Tarpor Publish চাপো.`}
+            </div>
+          )}
+          <button type="button" onClick={() => loadData()} style={{ ...S.btnStyle, ...S.btnAccent, width:"100%", justifyContent:"center" }}>
+            Abar try koro
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   // ─── NAV ITEMS ──────────────────────────────────────
   const navItems = [
     { id:"dashboard", label:"Dashboard", icon:"⊞" },
     { id:"expenses", label:"Expense Tracker", icon:"≡", section:"Money" },
     { id:"budget", label:"Budget Planner", icon:"◎" },
     { id:"income", label:"Income Sources", icon:"↗" },
+    { id:"subscriptions", label:"Subscriptions", icon:"◇" },
     { id:"savings", label:"Savings Goals", icon:"♥" },
     { id:"routine", label:"Daily Routine", icon:"▦", section:"Life" },
     { id:"habits", label:"Habit Tracker", icon:"✓" },
     { id:"mood", label:"Mood Log", icon:"☺" },
     { id:"report", label:"Monthly Report", icon:"▲" },
+    { id:"settings", label:"Settings", icon:"⚙", section:"App" },
     { id:"ai", label:"AI Advisor", icon:"✦", section:"AI", badge:"AI" },
   ];
 
@@ -290,6 +419,9 @@ Give practical, specific, actionable advice. Be encouraging. Keep responses conc
   const initials = name.slice(0,2).toUpperCase();
   const h = new Date().getHours();
   const greet = h < 12 ? "Good morning" : h < 17 ? "Good afternoon" : "Good evening";
+
+  const expensePresetCats = ["Food","Transport","Bills","Shopping","Health","Education","Entertainment"];
+  const expenseCatSelectOptions = expensePresetCats.includes(expForm.cat) ? expensePresetCats : [...expensePresetCats, expForm.cat];
 
   // ─── RENDER ─────────────────────────────────────────
   return (
@@ -345,6 +477,7 @@ Give practical, specific, actionable advice. Be encouraging. Keep responses conc
                 {label:"Total Income", value:fmt(totalIncome), sub:income.length+" sources"},
                 {label:"Spent This Month", value:fmt(totalSpent), sub:totalIncome?Math.round(totalSpent/totalIncome*100)+"% of income":""},
                 {label:"Remaining", value:fmt(Math.max(0,remaining)), sub:totalIncome?Math.round(Math.max(0,remaining)/totalIncome*100)+"% remaining":""},
+                {label:"Subs / mo", value:fmt(totalSubMonthly), sub:subscriptions.length+" plans"},
                 {label:"Habits Today", value:`${todayDoneHabits}/${habits.length}`, sub:"done"},
               ].map(m => (
                 <div key={m.label} style={S.metricCard}>
@@ -358,7 +491,7 @@ Give practical, specific, actionable advice. Be encouraging. Keep responses conc
             <div style={S.grid2}>
               <div style={S.card}>
                 <div style={S.sectionTitle}>Recent Expenses</div>
-                {expenses.slice(0,5).map(e => <ExpItem key={e.id} e={e} onDelete={handleDeleteExpense}/>)}
+                {expenses.slice(0,5).map(e => <ExpItem key={e.id} e={e} onEdit={openEditExpenseModal} onDelete={handleDeleteExpense}/>)}
                 {!expenses.length && <Empty icon="💸" text="Kono expense nei"/>}
               </div>
               <div style={{display:"flex",flexDirection:"column",gap:14}}>
@@ -396,7 +529,7 @@ Give practical, specific, actionable advice. Be encouraging. Keep responses conc
         {activePage==="expenses" && (
           <div style={S.page}>
             <PageHeader title="Expense Tracker" sub="koto taka kothay jacche">
-              <Btn onClick={()=>setModal("expense")} accent>+ Add Expense</Btn>
+              <Btn onClick={openNewExpenseModal} accent>+ Add Expense</Btn>
             </PageHeader>
             <div style={S.metricsGrid}>
               {[
@@ -409,7 +542,7 @@ Give practical, specific, actionable advice. Be encouraging. Keep responses conc
             <div style={S.grid2}>
               <div style={S.card}>
                 <div style={S.sectionTitle}>All Transactions</div>
-                {expenses.map(e=><ExpItem key={e.id} e={e} onDelete={handleDeleteExpense}/>)}
+                {expenses.map(e=><ExpItem key={e.id} e={e} onEdit={openEditExpenseModal} onDelete={handleDeleteExpense}/>)}
                 {!expenses.length && <Empty icon="🧾" text="Kono expense nei. Add koro!"/>}
               </div>
               <div style={S.card}>
@@ -494,6 +627,50 @@ Give practical, specific, actionable advice. Be encouraging. Keep responses conc
                 </div>
               ))}
               {!income.length && <Empty icon="💰" text="Income source add koro"/>}
+            </div>
+          </div>
+        )}
+
+        {/* ── SUBSCRIPTIONS ── */}
+        {activePage==="subscriptions" && (
+          <div style={S.page}>
+            <PageHeader title="Subscriptions" sub="Netflix, mobile, apps — fixed monthly bleed">
+              <Btn onClick={()=>setModal("subscription")} accent>+ Add</Btn>
+            </PageHeader>
+            <div style={S.metricsGrid}>
+              {[
+                { label: "~Monthly total", value: fmt(totalSubMonthly) },
+                { label: "Active plans", value: String(subscriptions.length) },
+                { label: "Yearly (count)", value: String(subscriptions.filter((s) => s.cycle === "yearly").length) },
+                { label: "Monthly (count)", value: String(subscriptions.filter((s) => s.cycle === "monthly").length) },
+              ].map((m) => (
+                <div key={m.label} style={S.metricCard}>
+                  <div style={S.metricLabel}>{m.label}</div>
+                  <div style={S.metricValue}>{m.value}</div>
+                </div>
+              ))}
+            </div>
+            <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(240px,1fr))", gap:14 }}>
+              {subscriptions.map((sub) => (
+                <div key={sub.id} style={S.card}>
+                  <div style={{ fontSize:10, color:"var(--text3)", textTransform:"uppercase", letterSpacing:"0.08em", fontFamily:"monospace", marginBottom:8 }}>
+                    {sub.cycle === "yearly" ? "Yearly plan" : "Monthly"}
+                  </div>
+                  <div style={{ fontSize:14, fontWeight:500 }}>{sub.name}</div>
+                  <div style={{ fontSize:22, fontWeight:600, fontFamily:"monospace", letterSpacing:-0.5, margin:"8px 0" }}>
+                    {fmt(sub.amount)}
+                    <span style={{ fontSize:12, color:"var(--text3)", fontWeight:400 }}>{sub.cycle === "yearly" ? "/yr" : "/mo"}</span>
+                  </div>
+                  <div style={{ fontSize:11, color:"var(--teal)", fontFamily:"monospace", marginBottom:8 }}>
+                    ≈ {fmt(subMonthly(sub))} / mo equivalent
+                  </div>
+                  {sub.note && <div style={{ fontSize:12, color:"var(--text3)", marginBottom:8 }}>{sub.note}</div>}
+                  <div style={{ display:"flex", justifyContent:"flex-end" }}>
+                    <span onClick={() => handleDeleteSubscription(sub.id)} style={{ fontSize:18, color:"var(--red)", cursor:"pointer", opacity:0.4 }}>×</span>
+                  </div>
+                </div>
+              ))}
+              {!subscriptions.length && <Empty icon="◇" text="Kono subscription nei — streaming, SIM, gym add koro" />}
             </div>
           </div>
         )}
@@ -724,6 +901,32 @@ Give practical, specific, actionable advice. Be encouraging. Keep responses conc
           </div>
         )}
 
+        {/* ── SETTINGS ── */}
+        {activePage==="settings" && (
+          <div style={S.page}>
+            <PageHeader title="Settings" sub="profile ar account" />
+            <div style={S.card}>
+              <div style={S.sectionTitle}>Profile</div>
+              <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
+                <FormField label="Display name">
+                  <input style={S.input} value={settingsDisplayName} onChange={(e) => setSettingsDisplayName(e.target.value)} placeholder="Tomar naam" />
+                </FormField>
+                <FormField label="Bio (optional)">
+                  <textarea style={{ ...S.input, resize:"none", minHeight:88 }} value={profileBio} onChange={(e) => setProfileBio(e.target.value)} placeholder="Choto intro — nijeke remind korar jonno" />
+                </FormField>
+                <Btn onClick={handleSaveSettings} accent>{settingsSaving ? "Saving..." : "Save profile"}</Btn>
+              </div>
+            </div>
+            <div style={{ ...S.card, marginTop:16 }}>
+              <div style={S.sectionTitle}>Account</div>
+              <div style={{ fontSize:13, color:"var(--text2)", marginBottom:6 }}>{user?.email}</div>
+              <div style={{ fontSize:11, color:"var(--text3)", lineHeight:1.5 }}>
+                Password change korar jonno logout kore login page theke &quot;Forgot password&quot; use korte paro (email login hole).
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* ── AI ── */}
         {activePage==="ai" && (
           <div style={S.page}>
@@ -772,12 +975,12 @@ Give practical, specific, actionable advice. Be encouraging. Keep responses conc
           <div onClick={e=>e.stopPropagation()} style={{background:"var(--bg2)",border:"1px solid var(--border2)",borderRadius:20,padding:28,width:460,maxWidth:"95vw"}}>
 
             {modal==="expense" && <>
-              <div style={S.modalTitle}>New Expense</div>
+              <div style={S.modalTitle}>{expenseEditId ? "Edit Expense" : "New Expense"}</div>
               <div style={{display:"flex",flexDirection:"column",gap:12}}>
                 <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
                   <FormField label="Amount (৳)"><input style={S.input} type="number" value={expForm.amount} onChange={e=>setExpForm(p=>({...p,amount:e.target.value}))} placeholder="0"/></FormField>
                   <FormField label="Category"><select style={S.input} value={expForm.cat} onChange={e=>setExpForm(p=>({...p,cat:e.target.value}))}>
-                    {["Food","Transport","Bills","Shopping","Health","Education","Entertainment"].map(c=><option key={c}>{c}</option>)}
+                    {expenseCatSelectOptions.map(c=><option key={c}>{c}</option>)}
                   </select></FormField>
                 </div>
                 <FormField label="Description"><input style={S.input} value={expForm.desc} onChange={e=>setExpForm(p=>({...p,desc:e.target.value}))} placeholder="Ki khoroch korle?"/></FormField>
@@ -788,7 +991,23 @@ Give practical, specific, actionable advice. Be encouraging. Keep responses conc
                   </select></FormField>
                 </div>
               </div>
-              <ModalActions onCancel={()=>setModal(null)} onSave={handleAddExpense}/>
+              <ModalActions onCancel={()=>setModal(null)} onSave={handleSaveExpense}/>
+            </>}
+
+            {modal==="subscription" && <>
+              <div style={S.modalTitle}>New Subscription</div>
+              <div style={{display:"flex",flexDirection:"column",gap:12}}>
+                <FormField label="Name"><input style={S.input} value={subForm.name} onChange={e=>setSubForm(p=>({...p,name:e.target.value}))} placeholder="Netflix, ChatGPT, Gym..."/></FormField>
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+                  <FormField label="Amount (৳)"><input style={S.input} type="number" value={subForm.amount} onChange={e=>setSubForm(p=>({...p,amount:e.target.value}))} placeholder="0"/></FormField>
+                  <FormField label="Billing"><select style={S.input} value={subForm.cycle} onChange={e=>setSubForm(p=>({...p,cycle:e.target.value as "monthly"|"yearly"}))}>
+                    <option value="monthly">Per month</option>
+                    <option value="yearly">Per year</option>
+                  </select></FormField>
+                </div>
+                <FormField label="Note (optional)"><input style={S.input} value={subForm.note} onChange={e=>setSubForm(p=>({...p,note:e.target.value}))} placeholder="Renewal date, plan name..."/></FormField>
+              </div>
+              <ModalActions onCancel={()=>setModal(null)} onSave={handleAddSubscription}/>
             </>}
 
             {modal==="income" && <>
@@ -878,7 +1097,7 @@ function Tag({ cat }: { cat: string }) {
   return <span style={{display:"inline-block",fontSize:10,padding:"2px 8px",borderRadius:20,fontWeight:500,background:c.bg,color:c.color}}>{cat}</span>;
 }
 
-function ExpItem({ e, onDelete }: { e: Expense; onDelete: (id:string)=>void }) {
+function ExpItem({ e, onEdit, onDelete }: { e: Expense; onEdit: (e: Expense)=>void; onDelete: (id:string)=>void }) {
   return (
     <div style={{display:"flex",alignItems:"center",gap:12,padding:"9px 0",borderBottom:"1px solid var(--border)"}}>
       <div style={{width:8,height:8,borderRadius:"50%",background:catColor(e.cat),flexShrink:0}}/>
@@ -890,6 +1109,7 @@ function ExpItem({ e, onDelete }: { e: Expense; onDelete: (id:string)=>void }) {
         <div style={{fontSize:13,fontWeight:600,fontFamily:"monospace"}}>{fmt(e.amount)}</div>
         <div style={{fontSize:10,color:"var(--text3)"}}>{e.date}</div>
       </div>
+      <button type="button" title="Edit" onClick={()=>onEdit(e)} style={{fontSize:12,color:"var(--accent)",cursor:"pointer",opacity:0.65,background:"none",border:"none",padding:"4px 2px",fontFamily:"inherit"}}>✎</button>
       <span onClick={()=>onDelete(e.id)} style={{fontSize:16,color:"var(--red)",cursor:"pointer",opacity:0.3}}>×</span>
     </div>
   );
