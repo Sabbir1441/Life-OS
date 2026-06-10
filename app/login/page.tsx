@@ -78,7 +78,7 @@ export default function LoginPage() {
   return (
     <div style={styles.page}>
       <div style={styles.orb1}/><div style={styles.orb2}/>
-      <div style={styles.card}>
+      <div className="lifeos-login-card" style={styles.card}>
         <div style={styles.logo}>Life<span style={{color:"var(--accent)"}}>OS</span></div>
         <div style={styles.tagline}>tomar jibon, tomar control</div>
 

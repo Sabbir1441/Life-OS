@@ -3,6 +3,8 @@ import { useEffect, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth-context";
 import * as DB from "@/lib/db";
+import * as Months from "@/lib/months";
+import type { PlannerMonth } from "@/lib/months";
 
 // ─── TYPES ───────────────────────────────────────────
 type Expense = { id: string; amount: number; cat: string; desc: string; date: string; method: string };
@@ -16,7 +18,6 @@ type Subscription = { id: string; name: string; amount: number; cycle: "monthly"
 // ─── HELPERS ─────────────────────────────────────────
 const fmt = (n: number) => "৳" + Math.round(n).toLocaleString();
 const todayStr = () => new Date().toISOString().slice(0, 10);
-const thisMonth = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`; };
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 const catColor = (cat: string) => ({ Food:"#7c6fff",Transport:"#2dd4bf",Bills:"#fbbf24",Shopping:"#f472b6",Health:"#34d399",Education:"#60a5fa",Entertainment:"#f87171" }[cat] || "#888");
 const catTag = (cat: string) => ({ Food:"food",Transport:"transport",Bills:"bills",Shopping:"shopping",Health:"health",Education:"education",Entertainment:"entertainment" }[cat] || "custom");
@@ -41,6 +42,14 @@ export default function Dashboard() {
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [dataLoading, setDataLoading] = useState(true);
   const [loadError, setLoadError] = useState<"permissions" | "other" | null>(null);
+  const [navOpen, setNavOpen] = useState(false);
+  const [months, setMonths] = useState<PlannerMonth[]>([]);
+  const [activeMonth, setActiveMonth] = useState<PlannerMonth | null>(null);
+  const [monthMenuOpen, setMonthMenuOpen] = useState(false);
+  const [newMonthForm, setNewMonthForm] = useState(() => {
+    const d = new Date();
+    return { year: String(d.getFullYear()), month: String(d.getMonth() + 1) };
+  });
 
   // AI
   const [aiMessages, setAiMessages] = useState<{role:string;content:string}[]>([{role:"ai",content:"Assalamu alaikum! Ami tomar LifeOS AI advisor 🙌\n\nTomar income, expense, routine — sob analyze kore advice dite pari. Ki jante chao?"}]);
@@ -64,22 +73,34 @@ export default function Dashboard() {
   const [moodEnergy, setMoodEnergy] = useState("");
   const [newBudgetCat, setNewBudgetCat] = useState("");
 
-  // Load all data
-  const loadData = useCallback(async () => {
+  // Load all data for active planner month
+  const loadData = useCallback(async (monthIdOverride?: string) => {
     if (!user) return;
     setDataLoading(true);
     setLoadError(null);
     try {
+      let active: PlannerMonth;
+      if (monthIdOverride) {
+        const found = await Months.getMonth(user.uid, monthIdOverride);
+        active = found ?? await Months.ensureMonthSetup(user.uid);
+      } else {
+        active = await Months.ensureMonthSetup(user.uid);
+      }
+      const mid = active.id;
+      const allMonths = await Months.getMonths(user.uid);
+      setActiveMonth(active);
+      setMonths(allMonths);
+
       const [exps, incs, subs, bud, gls, tsk, hab, hlogs, mds, prof] = await Promise.all([
-        DB.getExpenses(user.uid),
-        DB.getIncome(user.uid),
+        DB.getExpenses(user.uid, mid),
+        DB.getIncome(user.uid, mid),
         DB.getSubscriptions(user.uid),
-        DB.getBudget(user.uid),
-        DB.getGoals(user.uid),
-        DB.getTasks(user.uid),
-        DB.getHabits(user.uid),
-        DB.getHabitLogs(user.uid),
-        DB.getMoods(user.uid),
+        DB.getBudget(user.uid, mid),
+        DB.getGoals(user.uid, mid),
+        DB.getTasks(user.uid, mid),
+        DB.getHabits(user.uid, mid),
+        DB.getHabitLogs(user.uid, mid),
+        DB.getMoods(user.uid, mid),
         DB.getProfile(user.uid),
       ]);
       setExpenses(exps as Expense[]);
@@ -118,22 +139,67 @@ export default function Dashboard() {
     if (!modal) setExpenseEditId(null);
   }, [modal]);
 
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setNavOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  useEffect(() => {
+    const onResize = () => {
+      if (window.innerWidth >= 900) setNavOpen(false);
+    };
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
   // ─── COMPUTED ───────────────────────────────────────
+  const canEdit = activeMonth?.status === "active";
+  const monthLabel = activeMonth?.label ?? "This month";
   const totalIncome = income.reduce((s,i) => s+i.amount, 0);
-  const monthExp = expenses.filter(e => e.date?.startsWith(thisMonth()));
+  const monthExp = expenses;
   const totalSpent = monthExp.reduce((s,e) => s+e.amount, 0);
   const remaining = totalIncome - totalSpent;
   const todayDoneHabits = habits.filter(h => habitLogs[h.id]?.includes(todayStr())).length;
   const totalSubMonthly = subscriptions.reduce((s, sub) => s + subMonthly(sub), 0);
 
+  async function handleSwitchMonth(monthId: string) {
+    if (!user) return;
+    await Months.switchActiveMonth(user.uid, monthId);
+    setMonthMenuOpen(false);
+    await loadData(monthId);
+  }
+
+  async function handleCloseMonth() {
+    if (!user || !activeMonth || !canEdit) return;
+    if (!confirm(`${activeMonth.label} close kore notun month suru korbe. Thik ache?`)) return;
+    const next = await Months.closeMonthAndStartNext(user.uid, activeMonth.id);
+    setMonthMenuOpen(false);
+    await loadData(next.id);
+  }
+
+  async function handleCreateMonth() {
+    if (!user) return;
+    const year = parseInt(newMonthForm.year, 10);
+    const month = parseInt(newMonthForm.month, 10);
+    if (!year || month < 1 || month > 12) return;
+    const created = await Months.startCustomMonth(user.uid, year, month);
+    setModal(null);
+    setMonthMenuOpen(false);
+    await loadData(created.id);
+  }
+
   // ─── ACTIONS ────────────────────────────────────────
   async function handleSaveExpense() {
-    if (!user || !expForm.amount) return;
+    const mid = activeMonth?.id;
+    if (!user || !mid || !canEdit || !expForm.amount) return;
     const newExp = { amount: parseFloat(expForm.amount), cat: expForm.cat, desc: expForm.desc || expForm.cat, date: expForm.date, method: expForm.method };
     if (expenseEditId) {
-      await DB.updateExpense(user.uid, expenseEditId, newExp);
+      await DB.updateExpense(user.uid, mid, expenseEditId, newExp);
     } else {
-      await DB.addExpense(user.uid, newExp);
+      await DB.addExpense(user.uid, mid, newExp);
     }
     setExpForm({ amount:"", cat:"Food", desc:"", date:todayStr(), method:"Cash" });
     setExpenseEditId(null);
@@ -142,12 +208,14 @@ export default function Dashboard() {
   }
 
   function openNewExpenseModal() {
+    if (!canEdit) return;
     setExpenseEditId(null);
     setExpForm({ amount:"", cat:"Food", desc:"", date:todayStr(), method:"Cash" });
     setModal("expense");
   }
 
   function openEditExpenseModal(e: Expense) {
+    if (!canEdit) return;
     setExpenseEditId(e.id);
     setExpForm({
       amount: String(e.amount),
@@ -160,22 +228,25 @@ export default function Dashboard() {
   }
 
   async function handleDeleteExpense(id: string) {
-    if (!user) return;
-    await DB.deleteExpense(user.uid, id);
+    const mid = activeMonth?.id;
+    if (!user || !mid || !canEdit) return;
+    await DB.deleteExpense(user.uid, mid, id);
     setExpenses(prev => prev.filter(e => e.id !== id));
   }
 
   async function handleAddIncome() {
-    if (!user || !incForm.name || !incForm.amount) return;
-    await DB.addIncome(user.uid, { name: incForm.name, amount: parseFloat(incForm.amount), type: incForm.type });
+    const mid = activeMonth?.id;
+    if (!user || !mid || !canEdit || !incForm.name || !incForm.amount) return;
+    await DB.addIncome(user.uid, mid, { name: incForm.name, amount: parseFloat(incForm.amount), type: incForm.type });
     setIncForm({ name:"", amount:"", type:"fixed" });
     setModal(null);
     loadData();
   }
 
   async function handleDeleteIncome(id: string) {
-    if (!user) return;
-    await DB.deleteIncome(user.uid, id);
+    const mid = activeMonth?.id;
+    if (!user || !mid || !canEdit) return;
+    await DB.deleteIncome(user.uid, mid, id);
     setIncome(prev => prev.filter(i => i.id !== id));
   }
 
@@ -213,88 +284,99 @@ export default function Dashboard() {
   }
 
   async function handleSaveBudget() {
-    if (!user) return;
-    await DB.saveBudget(user.uid, budget);
+    const mid = activeMonth?.id;
+    if (!user || !mid || !canEdit) return;
+    await DB.saveBudget(user.uid, mid, budget);
     alert("Budget saved! ✅");
   }
 
   async function handleAddGoal() {
-    if (!user || !goalForm.name || !goalForm.target) return;
-    await DB.addGoal(user.uid, { name: goalForm.name, emoji: goalForm.emoji || "🎯", target: parseFloat(goalForm.target), current: parseFloat(goalForm.current)||0 });
+    const mid = activeMonth?.id;
+    if (!user || !mid || !canEdit || !goalForm.name || !goalForm.target) return;
+    await DB.addGoal(user.uid, mid, { name: goalForm.name, emoji: goalForm.emoji || "🎯", target: parseFloat(goalForm.target), current: parseFloat(goalForm.current)||0 });
     setGoalForm({ name:"", emoji:"🎯", target:"", current:"" });
     setModal(null);
     loadData();
   }
 
   async function handleAddToGoal(g: Goal) {
-    if (!user) return;
+    const mid = activeMonth?.id;
+    if (!user || !mid || !canEdit) return;
     const amt = parseFloat(prompt("Koto taka add korbe?") || "0");
     if (!amt || amt <= 0) return;
     const newCurrent = Math.min(g.target, g.current + amt);
-    await DB.updateGoal(user.uid, g.id, { current: newCurrent });
+    await DB.updateGoal(user.uid, mid, g.id, { current: newCurrent });
     loadData();
   }
 
   async function handleDeleteGoal(id: string) {
-    if (!user) return;
-    await DB.deleteGoal(user.uid, id);
+    const mid = activeMonth?.id;
+    if (!user || !mid || !canEdit) return;
+    await DB.deleteGoal(user.uid, mid, id);
     setGoals(prev => prev.filter(g => g.id !== id));
   }
 
   async function handleAddTask() {
-    if (!user || !taskForm.name) return;
+    const mid = activeMonth?.id;
+    if (!user || !mid || !canEdit || !taskForm.name) return;
     const newTasks = [...tasks, { id: uid(), name: taskForm.name, time: taskForm.time, dur: parseInt(taskForm.dur), cat: taskForm.cat, done: false }]
       .sort((a,b) => a.time.localeCompare(b.time));
-    await DB.saveTasks(user.uid, newTasks);
+    await DB.saveTasks(user.uid, mid, newTasks);
     setTasks(newTasks);
     setTaskForm({ name:"", time:"09:00", dur:"60", cat:"purple" });
     setModal(null);
   }
 
   async function handleToggleTask(id: string) {
-    if (!user) return;
+    const mid = activeMonth?.id;
+    if (!user || !mid || !canEdit) return;
     const newTasks = tasks.map(t => t.id === id ? {...t, done: !t.done} : t);
     setTasks(newTasks);
-    await DB.saveTasks(user.uid, newTasks);
+    await DB.saveTasks(user.uid, mid, newTasks);
   }
 
   async function handleDeleteTask(id: string) {
-    if (!user) return;
+    const mid = activeMonth?.id;
+    if (!user || !mid || !canEdit) return;
     const newTasks = tasks.filter(t => t.id !== id);
     setTasks(newTasks);
-    await DB.saveTasks(user.uid, newTasks);
+    await DB.saveTasks(user.uid, mid, newTasks);
   }
 
   async function handleAddHabit() {
-    if (!user || !habitForm.name) return;
+    const mid = activeMonth?.id;
+    if (!user || !mid || !canEdit || !habitForm.name) return;
     const newHabits = [...habits, { id: uid(), name: habitForm.name, freq: parseInt(habitForm.freq), color: habitForm.color }];
-    await DB.saveHabits(user.uid, newHabits);
+    await DB.saveHabits(user.uid, mid, newHabits);
     setHabits(newHabits);
     setHabitForm({ name:"", freq:"7", color:"var(--accent)" });
     setModal(null);
   }
 
   async function handleDeleteHabit(id: string) {
-    if (!user) return;
+    const mid = activeMonth?.id;
+    if (!user || !mid || !canEdit) return;
     const newHabits = habits.filter(h => h.id !== id);
     const newLogs = { ...habitLogs }; delete newLogs[id];
-    await DB.saveHabits(user.uid, newHabits);
-    await DB.saveHabitLogs(user.uid, newLogs);
+    await DB.saveHabits(user.uid, mid, newHabits);
+    await DB.saveHabitLogs(user.uid, mid, newLogs);
     setHabits(newHabits);
     setHabitLogs(newLogs);
   }
 
   async function handleToggleHabit(habitId: string, day: string) {
-    if (!user) return;
+    const mid = activeMonth?.id;
+    if (!user || !mid || !canEdit) return;
     const logs = habitLogs[habitId] || [];
     const newLogs = { ...habitLogs, [habitId]: logs.includes(day) ? logs.filter(d=>d!==day) : [...logs, day] };
     setHabitLogs(newLogs);
-    await DB.saveHabitLogs(user.uid, newLogs);
+    await DB.saveHabitLogs(user.uid, mid, newLogs);
   }
 
   async function handleSaveMood() {
-    if (!user || !selectedMood) return;
-    await DB.addMood(user.uid, { mood: selectedMood.score, label: selectedMood.label, note: moodNote, energy: parseInt(moodEnergy)||5, date: todayStr() });
+    const mid = activeMonth?.id;
+    if (!user || !mid || !canEdit || !selectedMood) return;
+    await DB.addMood(user.uid, mid, { mood: selectedMood.score, label: selectedMood.label, note: moodNote, energy: parseInt(moodEnergy)||5, date: todayStr() });
     setSelectedMood(null); setMoodNote(""); setMoodEnergy("");
     loadData();
   }
@@ -311,7 +393,7 @@ export default function Dashboard() {
     monthExp.forEach(e => { cats[e.cat] = (cats[e.cat]||0) + e.amount; });
 
     const system = `You are a friendly personal finance and life advisor for a Bangladeshi user. Speak in Banglish (Bangla + English mixed). Be like a smart helpful friend.
-User data: Income ${fmt(totalIncome)} from ${income.length} sources. Spent this month: ${fmt(totalSpent)} (${totalIncome ? Math.round(totalSpent/totalIncome*100) : 0}% of income). Remaining: ${fmt(Math.max(0,remaining))}. Top spending: ${JSON.stringify(cats)}. Subscriptions (~per month): ${fmt(totalSubMonthly)} (${subscriptions.length} plans). Savings goals: ${goals.map(g=>g.name+"("+Math.round(g.current/g.target*100)+"%done)").join(", ")||"none"}. Active habits: ${habits.map(h=>h.name).join(", ")||"none"}. Tasks: ${tasks.length}.
+Planner month: ${monthLabel}${canEdit ? " (active)" : " (closed/archive)"}. Income ${fmt(totalIncome)} from ${income.length} sources. Spent: ${fmt(totalSpent)} (${totalIncome ? Math.round(totalSpent/totalIncome*100) : 0}% of income). Remaining: ${fmt(Math.max(0,remaining))}. Top spending: ${JSON.stringify(cats)}. Subscriptions (~per month): ${fmt(totalSubMonthly)} (${subscriptions.length} plans). Savings goals: ${goals.map(g=>g.name+"("+Math.round(g.current/g.target*100)+"%done)").join(", ")||"none"}. Active habits: ${habits.map(h=>h.name).join(", ")||"none"}. Tasks: ${tasks.length}.
 Give practical, specific, actionable advice. Be encouraging. Keep responses concise. Use emojis occasionally.`;
 
     const newHistory = [...aiHistory, userMsg];
@@ -341,7 +423,7 @@ Give practical, specific, actionable advice. Be encouraging. Keep responses conc
     setReportLoading(true);
     const cats: Record<string,number> = {};
     monthExp.forEach(e => { cats[e.cat] = (cats[e.cat]||0) + e.amount; });
-    const prompt = `User financial data this month: Income: ${fmt(totalIncome)}, Spent: ${fmt(totalSpent)}, Remaining: ${fmt(totalIncome-totalSpent)}, Subscriptions (~monthly): ${fmt(totalSubMonthly)} (${subscriptions.length} items), Categories: ${JSON.stringify(cats)}, Goals: ${goals.length}, Habits: ${habits.length}. Friendly financial advisor hisebe 3-4 paragraph analysis dao. Banglish-e likho. Specific advice dao — kothay boro khoroch, ki improve korte hobe, savings tips. Bullet points use koro.`;
+    const prompt = `Planner month: ${monthLabel}. Income: ${fmt(totalIncome)}, Spent: ${fmt(totalSpent)}, Remaining: ${fmt(totalIncome-totalSpent)}, Subscriptions (~monthly): ${fmt(totalSubMonthly)} (${subscriptions.length} items), Categories: ${JSON.stringify(cats)}, Goals: ${goals.length}, Habits: ${habits.length}. Friendly financial advisor hisebe 3-4 paragraph analysis dao. Banglish-e likho. Specific advice dao — kothay boro khoroch, ki improve korte hobe, savings tips. Bullet points use koro.`;
     try {
       const res = await fetch("/api/ai", {
         method: "POST",
@@ -422,29 +504,69 @@ Tarpor Publish চাপো.`}
 
   const expensePresetCats = ["Food","Transport","Bills","Shopping","Health","Education","Entertainment"];
   const expenseCatSelectOptions = expensePresetCats.includes(expForm.cat) ? expensePresetCats : [...expensePresetCats, expForm.cat];
+  const activeNavLabel = navItems.find((i) => i.id === activePage)?.label ?? "LifeOS";
 
   // ─── RENDER ─────────────────────────────────────────
   return (
-    <div style={S.app}>
+    <div className={`lifeos-app${navOpen ? " nav-open" : ""}`} style={S.app}>
+      <div className="lifeos-sidebar-backdrop" onClick={() => setNavOpen(false)} aria-hidden />
+
       {/* SIDEBAR */}
-      <aside style={S.sidebar}>
+      <aside className={`lifeos-sidebar${navOpen ? " open" : ""}`} style={S.sidebar}>
         <div style={S.sidebarLogo}>
           <div style={S.logoText}>Life<span style={{color:"var(--accent)"}}>OS</span></div>
-          <div style={S.logoSub}>v1.0 · beta</div>
+          <div style={S.logoSub}>v1.0 · monthly planner</div>
         </div>
+
+        <div className="lifeos-month-bar">
+          <button type="button" className="lifeos-month-trigger" onClick={() => setMonthMenuOpen((v) => !v)}>
+            <span>📅</span>
+            <span className="lifeos-month-trigger-label">{monthLabel}</span>
+            <span className={`lifeos-month-status ${canEdit ? "active" : "closed"}`}>
+              {canEdit ? "active" : "closed"}
+            </span>
+          </button>
+          {monthMenuOpen && (
+            <div className="lifeos-month-menu">
+              <div className="lifeos-month-menu-title">Tomar months</div>
+              {months.map((m) => (
+                <button
+                  key={m.id}
+                  type="button"
+                  className={`lifeos-month-option${m.id === activeMonth?.id ? " selected" : ""}`}
+                  onClick={() => handleSwitchMonth(m.id)}
+                >
+                  <span>{m.label}</span>
+                  <span className="lifeos-month-option-tag">{m.status === "closed" ? "closed" : "active"}</span>
+                </button>
+              ))}
+              {canEdit && (
+                <>
+                  <button type="button" className="lifeos-month-action" onClick={handleCloseMonth}>
+                    Close month → notun suru
+                  </button>
+                  <button type="button" className="lifeos-month-action accent" onClick={() => { setModal("newMonth"); setMonthMenuOpen(false); }}>
+                    + Custom month
+                  </button>
+                </>
+              )}
+            </div>
+          )}
+        </div>
+
         <div style={S.sidebarUser}>
           <div style={S.avatar}>{initials}</div>
-          <div>
+          <div style={{ minWidth: 0, flex: 1 }}>
             <div style={S.userName}>{name}</div>
-            <div style={S.userEmail}>{user?.email}</div>
+            <div className="lifeos-user-email" style={S.userEmail}>{user?.email}</div>
           </div>
         </div>
         <nav style={{padding:"10px 0",flex:1}}>
-          {navItems.map((item,i) => (
+          {navItems.map((item) => (
             <div key={item.id}>
               {item.section && <div style={S.navSection}>{item.section}</div>}
               <div style={{...S.navItem, ...(activePage===item.id ? S.navItemActive : {})}}
-                onClick={()=>setActivePage(item.id)}>
+                onClick={() => { setActivePage(item.id); setNavOpen(false); }}>
                 <span style={{fontSize:14,opacity:0.8}}>{item.icon}</span>
                 {item.label}
                 {item.badge && <span style={S.badge}>{item.badge}</span>}
@@ -457,14 +579,32 @@ Tarpor Publish চাপো.`}
         </div>
       </aside>
 
+      <div className="lifeos-main-wrap">
+        <header className="lifeos-mobile-topbar">
+          <button type="button" className="lifeos-menu-btn" onClick={() => setNavOpen(true)} aria-label="Open menu">
+            ☰
+          </button>
+          <div className="lifeos-mobile-title">{activeNavLabel}</div>
+          <div className="lifeos-mobile-sub">LifeOS</div>
+        </header>
+
       {/* MAIN */}
-      <main style={S.main}>
+      <main className="lifeos-main" style={S.main}>
+
+        {!canEdit && activeMonth && (
+          <div className="lifeos-page" style={{ ...S.page, paddingBottom: 0 }}>
+            <div style={{ ...S.notif, marginBottom: 0, background: "rgba(251,191,36,0.08)", borderColor: "rgba(251,191,36,0.25)", color: "var(--amber)" }}>
+              <div style={S.notifDot} />
+              <strong>{activeMonth.label}</strong> closed — archive mode. Edit korar jonno active month select koro ba notun month kholo.
+            </div>
+          </div>
+        )}
 
         {/* ── DASHBOARD ── */}
         {activePage==="dashboard" && (
-          <div style={S.page}>
+          <div className="lifeos-page" style={S.page}>
             <div style={{fontSize:11,color:"var(--text3)",fontFamily:"monospace",marginBottom:4}}>{greet}</div>
-            <div style={{fontSize:24,fontWeight:600,letterSpacing:-0.4,marginBottom:24}}>Welcome back, <span style={{color:"var(--accent)"}}>{name}</span></div>
+            <div className="lifeos-welcome-title" style={{fontSize:24,fontWeight:600,letterSpacing:-0.4,marginBottom:24}}>Welcome back, <span style={{color:"var(--accent)"}}>{name}</span></div>
 
             {totalIncome > 0 && totalSpent/totalIncome > 0.7 && (
               <div style={S.notif}>
@@ -482,16 +622,16 @@ Tarpor Publish চাপো.`}
               ].map(m => (
                 <div key={m.label} style={S.metricCard}>
                   <div style={S.metricLabel}>{m.label}</div>
-                  <div style={S.metricValue}>{m.value}</div>
+                  <div className="lifeos-metric-value" style={S.metricValue}>{m.value}</div>
                   <div style={S.metricSub}>{m.sub}</div>
                 </div>
               ))}
             </div>
 
-            <div style={S.grid2}>
+            <div className="lifeos-grid2" style={S.grid2}>
               <div style={S.card}>
                 <div style={S.sectionTitle}>Recent Expenses</div>
-                {expenses.slice(0,5).map(e => <ExpItem key={e.id} e={e} onEdit={openEditExpenseModal} onDelete={handleDeleteExpense}/>)}
+                {expenses.slice(0,5).map(e => <ExpItem key={e.id} e={e} canEdit={canEdit} onEdit={openEditExpenseModal} onDelete={handleDeleteExpense}/>)}
                 {!expenses.length && <Empty icon="💸" text="Kono expense nei"/>}
               </div>
               <div style={{display:"flex",flexDirection:"column",gap:14}}>
@@ -527,7 +667,7 @@ Tarpor Publish চাপো.`}
 
         {/* ── EXPENSES ── */}
         {activePage==="expenses" && (
-          <div style={S.page}>
+          <div className="lifeos-page" style={S.page}>
             <PageHeader title="Expense Tracker" sub="koto taka kothay jacche">
               <Btn onClick={openNewExpenseModal} accent>+ Add Expense</Btn>
             </PageHeader>
@@ -537,12 +677,12 @@ Tarpor Publish চাপো.`}
                 {label:"Avg per Day",value:fmt(totalSpent/Math.max(1,new Date().getDate()))},
                 {label:"Biggest",value:fmt(monthExp.length?Math.max(...monthExp.map(e=>e.amount)):0)},
                 {label:"Transactions",value:String(monthExp.length)},
-              ].map(m=><div key={m.label} style={S.metricCard}><div style={S.metricLabel}>{m.label}</div><div style={S.metricValue}>{m.value}</div></div>)}
+              ].map(m=><div key={m.label} style={S.metricCard}><div style={S.metricLabel}>{m.label}</div><div className="lifeos-metric-value" style={S.metricValue}>{m.value}</div></div>)}
             </div>
-            <div style={S.grid2}>
+            <div className="lifeos-grid2" style={S.grid2}>
               <div style={S.card}>
                 <div style={S.sectionTitle}>All Transactions</div>
-                {expenses.map(e=><ExpItem key={e.id} e={e} onEdit={openEditExpenseModal} onDelete={handleDeleteExpense}/>)}
+                {expenses.map(e=><ExpItem key={e.id} e={e} canEdit={canEdit} onEdit={openEditExpenseModal} onDelete={handleDeleteExpense}/>)}
                 {!expenses.length && <Empty icon="🧾" text="Kono expense nei. Add koro!"/>}
               </div>
               <div style={S.card}>
@@ -555,7 +695,7 @@ Tarpor Publish চাপো.`}
 
         {/* ── BUDGET ── */}
         {activePage==="budget" && (
-          <div style={S.page}>
+          <div className="lifeos-page" style={S.page}>
             <PageHeader title="Budget Planner" sub="income onujaie koto kothay dewa uchit">
               <Btn onClick={handleSaveBudget} accent>Save Budget</Btn>
             </PageHeader>
@@ -564,9 +704,9 @@ Tarpor Publish চাপো.`}
                 {label:"Monthly Income",value:fmt(totalIncome)},
                 {label:"Total Budgeted",value:fmt(Object.values(budget).reduce((s,v)=>s+v,0))},
                 {label:"Unallocated",value:fmt(Math.max(0,totalIncome-Object.values(budget).reduce((s,v)=>s+v,0)))},
-              ].map(m=><div key={m.label} style={S.metricCard}><div style={S.metricLabel}>{m.label}</div><div style={S.metricValue}>{m.value}</div></div>)}
+              ].map(m=><div key={m.label} style={S.metricCard}><div style={S.metricLabel}>{m.label}</div><div className="lifeos-metric-value" style={S.metricValue}>{m.value}</div></div>)}
             </div>
-            <div style={S.grid2}>
+            <div className="lifeos-grid2" style={S.grid2}>
               <div style={S.card}>
                 <div style={S.sectionTitle}>Set Category Budgets</div>
                 {Object.entries(budget).map(([cat,amt])=>(
@@ -602,7 +742,7 @@ Tarpor Publish চাপো.`}
 
         {/* ── INCOME ── */}
         {activePage==="income" && (
-          <div style={S.page}>
+          <div className="lifeos-page" style={S.page}>
             <PageHeader title="Income Sources" sub="multiple sources — ekta jaegay">
               <Btn onClick={()=>setModal("income")} accent>+ Add Source</Btn>
             </PageHeader>
@@ -612,7 +752,7 @@ Tarpor Publish চাপো.`}
                 {label:"Fixed",value:fmt(income.filter(i=>i.type==="fixed").reduce((s,i)=>s+i.amount,0))},
                 {label:"Variable",value:fmt(income.filter(i=>i.type!=="fixed").reduce((s,i)=>s+i.amount,0))},
                 {label:"Sources",value:String(income.length)},
-              ].map(m=><div key={m.label} style={S.metricCard}><div style={S.metricLabel}>{m.label}</div><div style={S.metricValue}>{m.value}</div></div>)}
+              ].map(m=><div key={m.label} style={S.metricCard}><div style={S.metricLabel}>{m.label}</div><div className="lifeos-metric-value" style={S.metricValue}>{m.value}</div></div>)}
             </div>
             <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(220px,1fr))",gap:14}}>
               {income.map(inc=>(
@@ -633,7 +773,7 @@ Tarpor Publish চাপো.`}
 
         {/* ── SUBSCRIPTIONS ── */}
         {activePage==="subscriptions" && (
-          <div style={S.page}>
+          <div className="lifeos-page" style={S.page}>
             <PageHeader title="Subscriptions" sub="Netflix, mobile, apps — fixed monthly bleed">
               <Btn onClick={()=>setModal("subscription")} accent>+ Add</Btn>
             </PageHeader>
@@ -646,7 +786,7 @@ Tarpor Publish চাপো.`}
               ].map((m) => (
                 <div key={m.label} style={S.metricCard}>
                   <div style={S.metricLabel}>{m.label}</div>
-                  <div style={S.metricValue}>{m.value}</div>
+                  <div className="lifeos-metric-value" style={S.metricValue}>{m.value}</div>
                 </div>
               ))}
             </div>
@@ -677,7 +817,7 @@ Tarpor Publish চাপো.`}
 
         {/* ── SAVINGS ── */}
         {activePage==="savings" && (
-          <div style={S.page}>
+          <div className="lifeos-page" style={S.page}>
             <PageHeader title="Savings Goals" sub="shopno dekho, track koro, achieve koro">
               <Btn onClick={()=>setModal("goal")} accent>+ New Goal</Btn>
             </PageHeader>
@@ -687,7 +827,7 @@ Tarpor Publish চাপো.`}
                 {label:"Total Target",value:fmt(goals.reduce((s,g)=>s+g.target,0))},
                 {label:"Active Goals",value:String(goals.length)},
                 {label:"Completed",value:String(goals.filter(g=>g.current>=g.target).length)},
-              ].map(m=><div key={m.label} style={S.metricCard}><div style={S.metricLabel}>{m.label}</div><div style={S.metricValue}>{m.value}</div></div>)}
+              ].map(m=><div key={m.label} style={S.metricCard}><div style={S.metricLabel}>{m.label}</div><div className="lifeos-metric-value" style={S.metricValue}>{m.value}</div></div>)}
             </div>
             <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(260px,1fr))",gap:14}}>
               {goals.map(g=>{
@@ -722,7 +862,7 @@ Tarpor Publish চাপো.`}
 
         {/* ── ROUTINE ── */}
         {activePage==="routine" && (
-          <div style={S.page}>
+          <div className="lifeos-page" style={S.page}>
             <PageHeader title="Daily Routine" sub="tomar din — tumi design korbe">
               <Btn onClick={()=>setModal("task")}>+ Add Task</Btn>
               <Btn onClick={()=>{setActivePage("ai");setTimeout(()=>sendAI("আমার জন্য একটা productive daily routine suggest koro — morning থেকে night পর্যন্ত"),100);}} accent>AI Suggest ↗</Btn>
@@ -733,7 +873,7 @@ Tarpor Publish চাপো.`}
                 {label:"Completed",value:String(tasks.filter(t=>t.done).length)},
                 {label:"Remaining",value:String(tasks.filter(t=>!t.done).length)},
                 {label:"Completion",value:tasks.length?Math.round(tasks.filter(t=>t.done).length/tasks.length*100)+"%":"0%"},
-              ].map(m=><div key={m.label} style={S.metricCard}><div style={S.metricLabel}>{m.label}</div><div style={S.metricValue}>{m.value}</div></div>)}
+              ].map(m=><div key={m.label} style={S.metricCard}><div style={S.metricLabel}>{m.label}</div><div className="lifeos-metric-value" style={S.metricValue}>{m.value}</div></div>)}
             </div>
             <div style={S.card}>
               {!tasks.length && <Empty icon="🗓" text="Add task koro ba AI-ke bolo routine banate"/>}
@@ -765,7 +905,7 @@ Tarpor Publish চাপো.`}
 
         {/* ── HABITS ── */}
         {activePage==="habits" && (
-          <div style={S.page}>
+          <div className="lifeos-page" style={S.page}>
             <PageHeader title="Habit Tracker" sub="choto choto habit — boro poriborton">
               <Btn onClick={()=>setModal("habit")} accent>+ New Habit</Btn>
             </PageHeader>
@@ -774,7 +914,7 @@ Tarpor Publish চাপো.`}
                 {label:"Total Habits",value:String(habits.length)},
                 {label:"Done Today",value:String(todayDoneHabits)},
                 {label:"This Week",value:habits.length?Math.round(habits.reduce((s,h)=>{const days=[];for(let i=6;i>=0;i--){const d=new Date();d.setDate(d.getDate()-i);days.push(d.toISOString().slice(0,10));}return s+days.filter(d=>habitLogs[h.id]?.includes(d)).length;},0)/(habits.length*7)*100)+"%":"0%"},
-              ].map(m=><div key={m.label} style={S.metricCard}><div style={S.metricLabel}>{m.label}</div><div style={S.metricValue}>{m.value}</div></div>)}
+              ].map(m=><div key={m.label} style={S.metricCard}><div style={S.metricLabel}>{m.label}</div><div className="lifeos-metric-value" style={S.metricValue}>{m.value}</div></div>)}
             </div>
             <div style={S.card}>
               <div style={{display:"flex",justifyContent:"flex-end",marginBottom:12,gap:4}}>
@@ -787,12 +927,12 @@ Tarpor Publish চাপো.`}
               {habits.map(h=>{
                 const days: string[]=[];
                 for(let i=6;i>=0;i--){const d=new Date();d.setDate(d.getDate()-i);days.push(d.toISOString().slice(0,10));}
-                return <div key={h.id} style={{display:"flex",alignItems:"center",gap:10,padding:"10px 0",borderBottom:"1px solid var(--border)"}}>
-                  <div style={{flex:1}}>
+                return <div key={h.id} className="lifeos-habit-row" style={{display:"flex",alignItems:"center",gap:10,padding:"10px 0",borderBottom:"1px solid var(--border)"}}>
+                  <div style={{flex:1,minWidth:0}}>
                     <div style={{fontSize:13}}>{h.name}</div>
                     <div style={{fontSize:10,color:"var(--amber)",fontFamily:"monospace"}}>{h.freq}x/week</div>
                   </div>
-                  <div style={{display:"flex",gap:4}}>
+                  <div className="lifeos-habit-days">
                     {days.map(d=>{
                       const done=habitLogs[h.id]?.includes(d);
                       return <div key={d} onClick={()=>handleToggleHabit(h.id,d)} style={{width:22,height:22,borderRadius:6,border:"1px solid",borderColor:done?h.color:"var(--border)",background:done?h.color:"var(--bg3)",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,color:"#fff"}}>
@@ -809,9 +949,9 @@ Tarpor Publish চাপো.`}
 
         {/* ── MOOD ── */}
         {activePage==="mood" && (
-          <div style={S.page}>
+          <div className="lifeos-page" style={S.page}>
             <PageHeader title="Mood Log" sub="tumi kemon acho — protidin record koro"/>
-            <div style={S.grid2}>
+            <div className="lifeos-grid2" style={S.grid2}>
               <div style={S.card}>
                 <div style={S.sectionTitle}>Ajke kemon lagche?</div>
                 <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:16}}>
@@ -855,11 +995,11 @@ Tarpor Publish চাপো.`}
 
         {/* ── REPORT ── */}
         {activePage==="report" && (
-          <div style={S.page}>
-            <PageHeader title="Monthly Report" sub={new Date().toLocaleDateString("en-BD",{month:"long",year:"numeric"})}>
+          <div className="lifeos-page" style={S.page}>
+            <PageHeader title="Monthly Report" sub={monthLabel}>
               <Btn onClick={generateReport} accent>{reportLoading?"Generating...":"AI Analysis ↗"}</Btn>
             </PageHeader>
-            <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:12,marginBottom:16}}>
+            <div className="lifeos-report-stats">
               {[{label:"Income",value:fmt(totalIncome)},{label:"Spent",value:fmt(totalSpent)},{label:"Saved",value:fmt(Math.max(0,totalIncome-totalSpent)),green:true}].map(m=>(
                 <div key={m.label} style={{...S.card,textAlign:"center"}}>
                   <div style={{fontSize:22,fontWeight:600,fontFamily:"monospace",color:m.green?"var(--green)":"var(--text)"}}>{m.value}</div>
@@ -867,7 +1007,7 @@ Tarpor Publish চাপো.`}
                 </div>
               ))}
             </div>
-            <div style={S.grid2}>
+            <div className="lifeos-grid2" style={S.grid2}>
               <div style={S.card}>
                 <div style={S.sectionTitle}>Top Spending</div>
                 {Object.entries(monthExp.reduce((acc,e)=>{acc[e.cat]=(acc[e.cat]||0)+e.amount;return acc;},{}as Record<string,number>)).sort((a,b)=>b[1]-a[1]).slice(0,5).map(([cat,amt])=>(
@@ -903,7 +1043,7 @@ Tarpor Publish চাপো.`}
 
         {/* ── SETTINGS ── */}
         {activePage==="settings" && (
-          <div style={S.page}>
+          <div className="lifeos-page" style={S.page}>
             <PageHeader title="Settings" sub="profile ar account" />
             <div style={S.card}>
               <div style={S.sectionTitle}>Profile</div>
@@ -929,9 +1069,9 @@ Tarpor Publish চাপো.`}
 
         {/* ── AI ── */}
         {activePage==="ai" && (
-          <div style={S.page}>
+          <div className="lifeos-page" style={S.page}>
             <PageHeader title="AI Advisor" sub="tomar data analyze kore real advice debo"/>
-            <div style={{display:"flex",flexDirection:"column",height:"calc(100vh - 160px)"}}>
+            <div className="lifeos-ai-chat">
               <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:12}}>
                 {["💸 Spending analysis","📊 Budget suggest","🗓 Routine check","🎯 Savings advice","❤️ Financial health"].map(q=>(
                   <button key={q} onClick={()=>sendAI(q)} style={{background:"var(--bg3)",border:"1px solid var(--border)",borderRadius:20,padding:"5px 12px",fontSize:11,color:"var(--text2)",cursor:"pointer",fontFamily:"inherit"}}>{q}</button>
@@ -968,23 +1108,24 @@ Tarpor Publish চাপো.`}
         )}
 
       </main>
+      </div>
 
       {/* ── MODALS ── */}
       {modal && (
         <div onClick={()=>setModal(null)} style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",zIndex:200,display:"flex",alignItems:"center",justifyContent:"center",backdropFilter:"blur(4px)"}}>
-          <div onClick={e=>e.stopPropagation()} style={{background:"var(--bg2)",border:"1px solid var(--border2)",borderRadius:20,padding:28,width:460,maxWidth:"95vw"}}>
+          <div className="lifeos-modal-panel" onClick={e=>e.stopPropagation()} style={{background:"var(--bg2)",border:"1px solid var(--border2)",borderRadius:20,padding:28}}>
 
             {modal==="expense" && <>
               <div style={S.modalTitle}>{expenseEditId ? "Edit Expense" : "New Expense"}</div>
               <div style={{display:"flex",flexDirection:"column",gap:12}}>
-                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+                <div className="lifeos-form-grid-2">
                   <FormField label="Amount (৳)"><input style={S.input} type="number" value={expForm.amount} onChange={e=>setExpForm(p=>({...p,amount:e.target.value}))} placeholder="0"/></FormField>
                   <FormField label="Category"><select style={S.input} value={expForm.cat} onChange={e=>setExpForm(p=>({...p,cat:e.target.value}))}>
                     {expenseCatSelectOptions.map(c=><option key={c}>{c}</option>)}
                   </select></FormField>
                 </div>
                 <FormField label="Description"><input style={S.input} value={expForm.desc} onChange={e=>setExpForm(p=>({...p,desc:e.target.value}))} placeholder="Ki khoroch korle?"/></FormField>
-                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+                <div className="lifeos-form-grid-2">
                   <FormField label="Date"><input style={S.input} type="date" value={expForm.date} onChange={e=>setExpForm(p=>({...p,date:e.target.value}))}/></FormField>
                   <FormField label="Method"><select style={S.input} value={expForm.method} onChange={e=>setExpForm(p=>({...p,method:e.target.value}))}>
                     {["Cash","Bkash","Card","Nagad","Bank"].map(m=><option key={m}>{m}</option>)}
@@ -998,7 +1139,7 @@ Tarpor Publish চাপো.`}
               <div style={S.modalTitle}>New Subscription</div>
               <div style={{display:"flex",flexDirection:"column",gap:12}}>
                 <FormField label="Name"><input style={S.input} value={subForm.name} onChange={e=>setSubForm(p=>({...p,name:e.target.value}))} placeholder="Netflix, ChatGPT, Gym..."/></FormField>
-                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+                <div className="lifeos-form-grid-2">
                   <FormField label="Amount (৳)"><input style={S.input} type="number" value={subForm.amount} onChange={e=>setSubForm(p=>({...p,amount:e.target.value}))} placeholder="0"/></FormField>
                   <FormField label="Billing"><select style={S.input} value={subForm.cycle} onChange={e=>setSubForm(p=>({...p,cycle:e.target.value as "monthly"|"yearly"}))}>
                     <option value="monthly">Per month</option>
@@ -1014,7 +1155,7 @@ Tarpor Publish চাপো.`}
               <div style={S.modalTitle}>New Income Source</div>
               <div style={{display:"flex",flexDirection:"column",gap:12}}>
                 <FormField label="Source Name"><input style={S.input} value={incForm.name} onChange={e=>setIncForm(p=>({...p,name:e.target.value}))} placeholder="Freelance, Job, Tuition..."/></FormField>
-                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+                <div className="lifeos-form-grid-2">
                   <FormField label="Amount (৳)"><input style={S.input} type="number" value={incForm.amount} onChange={e=>setIncForm(p=>({...p,amount:e.target.value}))} placeholder="0"/></FormField>
                   <FormField label="Type"><select style={S.input} value={incForm.type} onChange={e=>setIncForm(p=>({...p,type:e.target.value}))}>
                     <option value="fixed">Fixed</option><option value="variable">Variable</option><option value="irregular">Irregular</option>
@@ -1027,11 +1168,11 @@ Tarpor Publish চাপো.`}
             {modal==="goal" && <>
               <div style={S.modalTitle}>New Savings Goal</div>
               <div style={{display:"flex",flexDirection:"column",gap:12}}>
-                <div style={{display:"grid",gridTemplateColumns:"1fr auto",gap:12}}>
+                <div className="lifeos-form-grid-goal">
                   <FormField label="Goal Name"><input style={S.input} value={goalForm.name} onChange={e=>setGoalForm(p=>({...p,name:e.target.value}))} placeholder="Bike, Emergency Fund..."/></FormField>
                   <FormField label="Emoji"><input style={{...S.input,width:60}} value={goalForm.emoji} onChange={e=>setGoalForm(p=>({...p,emoji:e.target.value}))} maxLength={2}/></FormField>
                 </div>
-                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+                <div className="lifeos-form-grid-2">
                   <FormField label="Target (৳)"><input style={S.input} type="number" value={goalForm.target} onChange={e=>setGoalForm(p=>({...p,target:e.target.value}))} placeholder="0"/></FormField>
                   <FormField label="Saved So Far (৳)"><input style={S.input} type="number" value={goalForm.current} onChange={e=>setGoalForm(p=>({...p,current:e.target.value}))} placeholder="0"/></FormField>
                 </div>
@@ -1043,7 +1184,7 @@ Tarpor Publish চাপো.`}
               <div style={S.modalTitle}>New Task</div>
               <div style={{display:"flex",flexDirection:"column",gap:12}}>
                 <FormField label="Task Name"><input style={S.input} value={taskForm.name} onChange={e=>setTaskForm(p=>({...p,name:e.target.value}))} placeholder="Ki korte hobe?"/></FormField>
-                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12}}>
+                <div className="lifeos-form-grid-3">
                   <FormField label="Time"><input style={S.input} type="time" value={taskForm.time} onChange={e=>setTaskForm(p=>({...p,time:e.target.value}))}/></FormField>
                   <FormField label="Duration"><select style={S.input} value={taskForm.dur} onChange={e=>setTaskForm(p=>({...p,dur:e.target.value}))}>
                     {[["15","15 min"],["30","30 min"],["60","1 hour"],["90","1.5 hr"],["120","2 hours"]].map(([v,l])=><option key={v} value={v}>{l}</option>)}
@@ -1056,11 +1197,29 @@ Tarpor Publish চাপো.`}
               <ModalActions onCancel={()=>setModal(null)} onSave={handleAddTask}/>
             </>}
 
+            {modal==="newMonth" && <>
+              <div style={S.modalTitle}>New planner month</div>
+              <p style={{ fontSize: 12, color: "var(--text3)", marginBottom: 16, lineHeight: 1.5 }}>
+                Notun month khulle ager active month auto close hobe. Fresh budget, goals, routine — sob alada.
+              </p>
+              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                <div className="lifeos-form-grid-2">
+                  <FormField label="Year">
+                    <input style={S.input} type="number" value={newMonthForm.year} onChange={(e) => setNewMonthForm((p) => ({ ...p, year: e.target.value }))} />
+                  </FormField>
+                  <FormField label="Month (1-12)">
+                    <input style={S.input} type="number" min={1} max={12} value={newMonthForm.month} onChange={(e) => setNewMonthForm((p) => ({ ...p, month: e.target.value }))} />
+                  </FormField>
+                </div>
+              </div>
+              <ModalActions onCancel={() => setModal(null)} onSave={handleCreateMonth} />
+            </>}
+
             {modal==="habit" && <>
               <div style={S.modalTitle}>New Habit</div>
               <div style={{display:"flex",flexDirection:"column",gap:12}}>
                 <FormField label="Habit Name"><input style={S.input} value={habitForm.name} onChange={e=>setHabitForm(p=>({...p,name:e.target.value}))} placeholder="Pani khawa, Exercise, Reading..."/></FormField>
-                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+                <div className="lifeos-form-grid-2">
                   <FormField label="Target/week"><select style={S.input} value={habitForm.freq} onChange={e=>setHabitForm(p=>({...p,freq:e.target.value}))}>
                     <option value="7">Every day</option><option value="5">5 days</option><option value="3">3 days</option><option value="1">Once a week</option>
                   </select></FormField>
@@ -1097,7 +1256,7 @@ function Tag({ cat }: { cat: string }) {
   return <span style={{display:"inline-block",fontSize:10,padding:"2px 8px",borderRadius:20,fontWeight:500,background:c.bg,color:c.color}}>{cat}</span>;
 }
 
-function ExpItem({ e, onEdit, onDelete }: { e: Expense; onEdit: (e: Expense)=>void; onDelete: (id:string)=>void }) {
+function ExpItem({ e, onEdit, onDelete, canEdit = true }: { e: Expense; onEdit: (e: Expense)=>void; onDelete: (id:string)=>void; canEdit?: boolean }) {
   return (
     <div style={{display:"flex",alignItems:"center",gap:12,padding:"9px 0",borderBottom:"1px solid var(--border)"}}>
       <div style={{width:8,height:8,borderRadius:"50%",background:catColor(e.cat),flexShrink:0}}/>
@@ -1109,8 +1268,8 @@ function ExpItem({ e, onEdit, onDelete }: { e: Expense; onEdit: (e: Expense)=>vo
         <div style={{fontSize:13,fontWeight:600,fontFamily:"monospace"}}>{fmt(e.amount)}</div>
         <div style={{fontSize:10,color:"var(--text3)"}}>{e.date}</div>
       </div>
-      <button type="button" title="Edit" onClick={()=>onEdit(e)} style={{fontSize:12,color:"var(--accent)",cursor:"pointer",opacity:0.65,background:"none",border:"none",padding:"4px 2px",fontFamily:"inherit"}}>✎</button>
-      <span onClick={()=>onDelete(e.id)} style={{fontSize:16,color:"var(--red)",cursor:"pointer",opacity:0.3}}>×</span>
+      {canEdit && <button type="button" title="Edit" onClick={()=>onEdit(e)} style={{fontSize:12,color:"var(--accent)",cursor:"pointer",opacity:0.65,background:"none",border:"none",padding:"4px 2px",fontFamily:"inherit"}}>✎</button>}
+      {canEdit && <span onClick={()=>onDelete(e.id)} style={{fontSize:16,color:"var(--red)",cursor:"pointer",opacity:0.3}}>×</span>}
     </div>
   );
 }
@@ -1140,12 +1299,12 @@ function Empty({ icon, text }: { icon: string; text: string }) {
 }
 
 function PageHeader({ title, sub, children }: { title:string; sub?:string; children?: React.ReactNode }) {
-  return <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",marginBottom:24}}>
-    <div>
+  return <div className="lifeos-page-header">
+    <div style={{ minWidth: 0, flex: 1 }}>
       <div style={{fontSize:22,fontWeight:600,letterSpacing:-0.3}}>{title}</div>
       {sub && <div style={{fontSize:11,color:"var(--text3)",marginTop:4,fontFamily:"monospace"}}>{sub}</div>}
     </div>
-    {children && <div style={{display:"flex",gap:8}}>{children}</div>}
+    {children && <div className="lifeos-page-header-actions">{children}</div>}
   </div>;
 }
 
@@ -1169,7 +1328,7 @@ function Btn({ children, onClick, accent }: { children:React.ReactNode; onClick:
 
 // ─── STYLES ──────────────────────────────────────────
 const S: Record<string,React.CSSProperties> = {
-  app: {display:"flex",height:"100vh",overflow:"hidden",background:"var(--bg)"},
+  app: {display:"flex",height:"100vh",overflow:"hidden",background:"var(--bg)",width:"100%"},
   sidebar: {width:240,background:"var(--bg2)",borderRight:"1px solid var(--border)",display:"flex",flexDirection:"column",padding:"20px 0",flexShrink:0,height:"100vh",overflowY:"auto"},
   sidebarLogo: {padding:"0 20px 20px",borderBottom:"1px solid var(--border)"},
   logoText: {fontSize:18,fontWeight:600,letterSpacing:-0.3},
@@ -1183,8 +1342,8 @@ const S: Record<string,React.CSSProperties> = {
   navItemActive: {background:"rgba(124,111,255,0.15)",color:"var(--accent2)",borderLeftColor:"var(--accent)",fontWeight:500},
   badge: {marginLeft:"auto",background:"var(--accent)",color:"#fff",fontSize:9,padding:"2px 6px",borderRadius:10,fontFamily:"monospace"},
   logout: {padding:"14px 20px",borderTop:"1px solid var(--border)",cursor:"pointer",fontSize:12,color:"var(--text3)",display:"flex",alignItems:"center",gap:8},
-  main: {flex:1,overflowY:"auto",height:"100vh"},
-  page: {padding:28,minHeight:"100%",animation:"pageIn 0.3s ease both"},
+  main: {flex:1,overflowY:"auto"},
+  page: {minHeight:"100%",animation:"pageIn 0.3s ease both"},
   notif: {background:"rgba(124,111,255,0.1)",border:"1px solid rgba(124,111,255,0.2)",borderRadius:8,padding:"10px 14px",fontSize:12,color:"var(--accent2)",display:"flex",alignItems:"center",gap:8,marginBottom:16},
   notifDot: {width:6,height:6,borderRadius:"50%",background:"var(--accent)",flexShrink:0},
   metricsGrid: {display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(150px,1fr))",gap:12,marginBottom:20},
@@ -1193,7 +1352,7 @@ const S: Record<string,React.CSSProperties> = {
   metricValue: {fontSize:24,fontWeight:600,letterSpacing:-0.5},
   metricSub: {fontSize:11,color:"var(--text3)",marginTop:5},
   card: {background:"var(--bg2)",border:"1px solid var(--border)",borderRadius:14,padding:"18px 20px"},
-  grid2: {display:"grid",gridTemplateColumns:"1fr 320px",gap:16},
+  grid2: {},
   sectionTitle: {fontSize:12,fontWeight:500,color:"var(--text2)",textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:14,fontFamily:"monospace"},
   input: {background:"var(--bg3)",border:"1px solid var(--border)",borderRadius:8,padding:"9px 12px",color:"var(--text)",fontSize:13,outline:"none",width:"100%"},
   modalTitle: {fontSize:16,fontWeight:600,marginBottom:20},
