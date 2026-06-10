@@ -12,7 +12,9 @@ export const viewport: Viewport = {
 
 export const metadata: Metadata = {
   title: "LifeOS — Tomar Jibon, Tomar Control",
-  description: "Personal life & finance management app",
+  description: "Personal life & finance monthly planner",
+  icons: { icon: "/icon.svg", apple: "/icon.svg" },
+  appleWebApp: { capable: true, title: "LifeOS", statusBarStyle: "black-translucent" },
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

@@ -9,6 +9,19 @@ import {
   writeBatch,
 } from "firebase/firestore";
 import { db } from "./firebase";
+import * as DB from "./db";
+
+export type MonthSummary = {
+  income: number;
+  spent: number;
+  remaining: number;
+  expenseCount: number;
+  goalCount: number;
+  tasksDone: number;
+  tasksTotal: number;
+};
+
+export type CopyOptions = { tasks: boolean; habits: boolean };
 
 export type MonthStatus = "active" | "closed";
 
@@ -186,22 +199,59 @@ export async function switchActiveMonth(uid: string, monthId: string) {
   await setActiveMonthId(uid, monthId);
 }
 
-export async function closeMonthAndStartNext(uid: string, currentMonthId: string): Promise<PlannerMonth> {
-  const current = await getMonth(uid, currentMonthId);
-  if (!current) throw new Error("Month not found");
-
-  await updateDoc(doc(db, "users", uid, "months", currentMonthId), {
-    status: "closed",
-    closedAt: serverTimestamp(),
-  });
-
-  const next = nextMonthParts(current.year, current.month);
-  const newMonth = await createMonth(uid, next.year, next.month, "active");
-  await setActiveMonthId(uid, newMonth.id);
-  return newMonth;
+export async function buildMonthSummary(uid: string, monthId: string): Promise<MonthSummary> {
+  const [exps, incs, goals, tasks] = await Promise.all([
+    DB.getExpenses(uid, monthId),
+    DB.getIncome(uid, monthId),
+    DB.getGoals(uid, monthId),
+    DB.getTasks(uid, monthId),
+  ]);
+  const income = (incs as { amount?: number }[]).reduce((s, i) => s + (i.amount || 0), 0);
+  const spent = (exps as { amount?: number }[]).reduce((s, e) => s + (e.amount || 0), 0);
+  const taskList = (tasks as { done?: boolean }[]) || [];
+  return {
+    income,
+    spent,
+    remaining: income - spent,
+    expenseCount: exps.length,
+    goalCount: goals.length,
+    tasksDone: taskList.filter((t) => t.done).length,
+    tasksTotal: taskList.length,
+  };
 }
 
-export async function startCustomMonth(uid: string, year: number, month: number): Promise<PlannerMonth> {
+export async function saveMonthSummary(uid: string, monthId: string, summary: MonthSummary) {
+  await setDoc(doc(db, "users", uid, "months", monthId, "settings", "summary"), {
+    ...summary,
+    savedAt: serverTimestamp(),
+  });
+}
+
+export async function copyPlannerFromMonth(
+  uid: string,
+  fromMonthId: string,
+  toMonthId: string,
+  opts: CopyOptions
+) {
+  if (opts.tasks) {
+    const tasks = (await DB.getTasks(uid, fromMonthId)) as Record<string, unknown>[];
+    const fresh = tasks.map((t) => ({ ...t, done: false }));
+    await DB.saveTasks(uid, toMonthId, fresh);
+  }
+  if (opts.habits) {
+    const habits = await DB.getHabits(uid, fromMonthId);
+    await DB.saveHabits(uid, toMonthId, habits);
+    await DB.saveHabitLogs(uid, toMonthId, {});
+  }
+}
+
+export async function startCustomMonth(
+  uid: string,
+  year: number,
+  month: number,
+  copyFromId?: string,
+  copyOpts?: CopyOptions
+): Promise<PlannerMonth> {
   const openMonths = (await getMonths(uid)).filter((m) => m.status === "active");
   for (const m of openMonths) {
     await updateDoc(doc(db, "users", uid, "months", m.id), {
@@ -210,6 +260,34 @@ export async function startCustomMonth(uid: string, year: number, month: number)
     });
   }
   const created = await createMonth(uid, year, month, "active");
+  if (copyFromId && copyOpts && (copyOpts.tasks || copyOpts.habits)) {
+    await copyPlannerFromMonth(uid, copyFromId, created.id, copyOpts);
+  }
   await setActiveMonthId(uid, created.id);
   return created;
+}
+
+export async function closeMonthAndStartNext(
+  uid: string,
+  currentMonthId: string,
+  copyOpts?: CopyOptions
+): Promise<{ closed: PlannerMonth; next: PlannerMonth; summary: MonthSummary }> {
+  const current = await getMonth(uid, currentMonthId);
+  if (!current) throw new Error("Month not found");
+
+  const summary = await buildMonthSummary(uid, currentMonthId);
+  await saveMonthSummary(uid, currentMonthId, summary);
+
+  await updateDoc(doc(db, "users", uid, "months", currentMonthId), {
+    status: "closed",
+    closedAt: serverTimestamp(),
+  });
+
+  const nextParts = nextMonthParts(current.year, current.month);
+  const newMonth = await createMonth(uid, nextParts.year, nextParts.month, "active");
+  if (copyOpts && (copyOpts.tasks || copyOpts.habits)) {
+    await copyPlannerFromMonth(uid, currentMonthId, newMonth.id, copyOpts);
+  }
+  await setActiveMonthId(uid, newMonth.id);
+  return { closed: { ...current, status: "closed" }, next: newMonth, summary };
 }

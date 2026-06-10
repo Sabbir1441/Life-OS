@@ -62,8 +62,33 @@ export async function getIncome(uid: string, monthId: string) {
   return snap.docs.map(d => ({ id: d.id, ...d.data() }));
 }
 
+export async function updateIncome(uid: string, monthId: string, id: string, data: Record<string, unknown>) {
+  return updateDoc(doc(db, "users", uid, "months", monthId, "income", id), data);
+}
+
 export async function deleteIncome(uid: string, monthId: string, id: string) {
   return deleteDoc(doc(db, "users", uid, "months", monthId, "income", id));
+}
+
+// ─── DEBTS (global) ──────────────────────────────────
+export async function addDebt(uid: string, data: Record<string, unknown>) {
+  return addDoc(collection(db, "users", uid, "debts"), {
+    ...data,
+    createdAt: serverTimestamp(),
+  });
+}
+
+export async function getDebts(uid: string) {
+  const snap = await getDocs(collection(db, "users", uid, "debts"));
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+}
+
+export async function updateDebt(uid: string, id: string, data: Record<string, unknown>) {
+  return updateDoc(doc(db, "users", uid, "debts", id), data);
+}
+
+export async function deleteDebt(uid: string, id: string) {
+  return deleteDoc(doc(db, "users", uid, "debts", id));
 }
 
 // ─── SUBSCRIPTIONS (global — recurring across months) ─

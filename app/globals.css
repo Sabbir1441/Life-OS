@@ -260,6 +260,21 @@ a { color: inherit; text-decoration: none; }
   color: var(--accent2);
 }
 
+/* Tablet: slightly narrower sidebar feel, keep drawer optional */
+@media (min-width: 900px) and (max-width: 1199px) {
+  .lifeos-grid2 {
+    grid-template-columns: 1fr 260px;
+  }
+
+  .lifeos-page {
+    padding: 20px 18px;
+  }
+
+  .lifeos-metrics-grid-tight {
+    grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  }
+}
+
 @media (max-width: 899px) {
   .lifeos-app.nav-open {
     overflow: hidden;
@@ -297,16 +312,22 @@ a { color: inherit; text-decoration: none; }
     display: flex;
     align-items: center;
     gap: 12px;
-    padding: 12px 14px;
+    padding: max(12px, env(safe-area-inset-top)) 14px 12px;
     background: var(--bg2);
     border-bottom: 1px solid var(--border);
     flex-shrink: 0;
     min-height: 52px;
   }
 
+  .lifeos-nav-item-touch {
+    min-height: 44px;
+    padding-top: 11px !important;
+    padding-bottom: 11px !important;
+  }
+
   .lifeos-menu-btn {
-    width: 40px;
-    height: 40px;
+    width: 44px;
+    height: 44px;
     border-radius: 10px;
     border: 1px solid var(--border);
     background: var(--bg3);

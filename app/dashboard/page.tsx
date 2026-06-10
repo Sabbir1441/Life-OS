@@ -4,7 +4,9 @@ import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth-context";
 import * as DB from "@/lib/db";
 import * as Months from "@/lib/months";
-import type { PlannerMonth } from "@/lib/months";
+import type { PlannerMonth, MonthSummary } from "@/lib/months";
+import { fmt, setCurrencySymbol } from "@/lib/format";
+import { downloadCsv } from "@/lib/export-csv";
 
 // ─── TYPES ───────────────────────────────────────────
 type Expense = { id: string; amount: number; cat: string; desc: string; date: string; method: string };
@@ -14,9 +16,11 @@ type Task = { id: string; name: string; time: string; dur: number; cat: string; 
 type Habit = { id: string; name: string; freq: number; color: string };
 type MoodLog = { id: string; mood: number; label: string; note: string; energy: number; date: string };
 type Subscription = { id: string; name: string; amount: number; cycle: "monthly" | "yearly"; note?: string };
+type Debt = { id: string; name: string; total: number; paid: number; emi: number; dueDay?: number };
+
+const CURRENCIES: Record<string, string> = { BDT: "৳", USD: "$", EUR: "€", GBP: "£" };
 
 // ─── HELPERS ─────────────────────────────────────────
-const fmt = (n: number) => "৳" + Math.round(n).toLocaleString();
 const todayStr = () => new Date().toISOString().slice(0, 10);
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 const catColor = (cat: string) => ({ Food:"#7c6fff",Transport:"#2dd4bf",Bills:"#fbbf24",Shopping:"#f472b6",Health:"#34d399",Education:"#60a5fa",Entertainment:"#f87171" }[cat] || "#888");
@@ -64,6 +68,14 @@ export default function Dashboard() {
   const [expForm, setExpForm] = useState({ amount:"", cat:"Food", desc:"", date:todayStr(), method:"Cash" });
   const [expenseEditId, setExpenseEditId] = useState<string | null>(null);
   const [incForm, setIncForm] = useState({ name:"", amount:"", type:"fixed" });
+  const [incomeEditId, setIncomeEditId] = useState<string | null>(null);
+  const [debts, setDebts] = useState<Debt[]>([]);
+  const [debtForm, setDebtForm] = useState({ name:"", total:"", paid:"", emi:"", dueDay:"" });
+  const [debtEditId, setDebtEditId] = useState<string | null>(null);
+  const [closeSummary, setCloseSummary] = useState<MonthSummary | null>(null);
+  const [copyRoutine, setCopyRoutine] = useState(true);
+  const [copyHabitsOpt, setCopyHabitsOpt] = useState(true);
+  const [currencyChoice, setCurrencyChoice] = useState("BDT");
   const [subForm, setSubForm] = useState({ name:"", amount:"", cycle:"monthly" as "monthly"|"yearly", note:"" });
   const [goalForm, setGoalForm] = useState({ name:"", emoji:"🎯", target:"", current:"" });
   const [taskForm, setTaskForm] = useState({ name:"", time:"09:00", dur:"60", cat:"purple" });
@@ -91,7 +103,7 @@ export default function Dashboard() {
       setActiveMonth(active);
       setMonths(allMonths);
 
-      const [exps, incs, subs, bud, gls, tsk, hab, hlogs, mds, prof] = await Promise.all([
+      const [exps, incs, subs, bud, gls, tsk, hab, hlogs, mds, prof, dbt] = await Promise.all([
         DB.getExpenses(user.uid, mid),
         DB.getIncome(user.uid, mid),
         DB.getSubscriptions(user.uid),
@@ -102,6 +114,7 @@ export default function Dashboard() {
         DB.getHabitLogs(user.uid, mid),
         DB.getMoods(user.uid, mid),
         DB.getProfile(user.uid),
+        DB.getDebts(user.uid),
       ]);
       setExpenses(exps as Expense[]);
       setIncome(incs as Income[]);
@@ -122,6 +135,18 @@ export default function Dashboard() {
       const p = prof as Record<string, unknown>;
       setProfileBio(typeof p.bio === "string" ? p.bio : "");
       setSettingsDisplayName(user.displayName || (typeof p.displayName === "string" ? p.displayName : "") || "");
+      const cur = typeof p.currency === "string" ? p.currency : "BDT";
+      setCurrencyChoice(cur);
+      setCurrencySymbol(CURRENCIES[cur] ?? "৳");
+      const rawDebts = dbt as Record<string, unknown>[];
+      setDebts(rawDebts.map((r) => ({
+        id: r.id as string,
+        name: String(r.name ?? ""),
+        total: typeof r.total === "number" ? r.total : parseFloat(String(r.total)) || 0,
+        paid: typeof r.paid === "number" ? r.paid : parseFloat(String(r.paid)) || 0,
+        emi: typeof r.emi === "number" ? r.emi : parseFloat(String(r.emi)) || 0,
+        dueDay: typeof r.dueDay === "number" ? r.dueDay : undefined,
+      })));
     } catch (e: unknown) {
       const code = typeof e === "object" && e && "code" in e ? String((e as { code?: string }).code) : "";
       setLoadError(code === "permission-denied" ? "permissions" : "other");
@@ -136,7 +161,11 @@ export default function Dashboard() {
   }, [user, loading, router, loadData]);
 
   useEffect(() => {
-    if (!modal) setExpenseEditId(null);
+    if (!modal) {
+      setExpenseEditId(null);
+      setIncomeEditId(null);
+      setDebtEditId(null);
+    }
   }, [modal]);
 
   useEffect(() => {
@@ -164,6 +193,8 @@ export default function Dashboard() {
   const remaining = totalIncome - totalSpent;
   const todayDoneHabits = habits.filter(h => habitLogs[h.id]?.includes(todayStr())).length;
   const totalSubMonthly = subscriptions.reduce((s, sub) => s + subMonthly(sub), 0);
+  const totalDebtRemaining = debts.reduce((s, d) => s + Math.max(0, d.total - d.paid), 0);
+  const totalEmiMonthly = debts.reduce((s, d) => s + d.emi, 0);
 
   async function handleSwitchMonth(monthId: string) {
     if (!user) return;
@@ -172,23 +203,58 @@ export default function Dashboard() {
     await loadData(monthId);
   }
 
-  async function handleCloseMonth() {
+  async function openCloseMonthModal() {
     if (!user || !activeMonth || !canEdit) return;
-    if (!confirm(`${activeMonth.label} close kore notun month suru korbe. Thik ache?`)) return;
-    const next = await Months.closeMonthAndStartNext(user.uid, activeMonth.id);
+    const summary = await Months.buildMonthSummary(user.uid, activeMonth.id);
+    setCloseSummary(summary);
+    setModal("closeMonth");
     setMonthMenuOpen(false);
+  }
+
+  async function confirmCloseMonth() {
+    if (!user || !activeMonth) return;
+    const copyOpts = { tasks: copyRoutine, habits: copyHabitsOpt };
+    const { next } = await Months.closeMonthAndStartNext(user.uid, activeMonth.id, copyOpts);
+    setCloseSummary(null);
+    setModal(null);
     await loadData(next.id);
   }
 
   async function handleCreateMonth() {
-    if (!user) return;
+    if (!user || !activeMonth) return;
     const year = parseInt(newMonthForm.year, 10);
     const month = parseInt(newMonthForm.month, 10);
     if (!year || month < 1 || month > 12) return;
-    const created = await Months.startCustomMonth(user.uid, year, month);
+    const copyOpts = { tasks: copyRoutine, habits: copyHabitsOpt };
+    const created = await Months.startCustomMonth(user.uid, year, month, activeMonth.id, copyOpts);
     setModal(null);
     setMonthMenuOpen(false);
     await loadData(created.id);
+  }
+
+  async function aiHeaders(): Promise<Record<string, string>> {
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (user) headers.Authorization = `Bearer ${await user.getIdToken()}`;
+    return headers;
+  }
+
+  function exportMonthCsv() {
+    if (!activeMonth) return;
+    const rows: string[][] = [
+      ["LifeOS Export", activeMonth.label],
+      [],
+      ["EXPENSES", "Amount", "Category", "Description", "Date", "Method"],
+      ...expenses.map((e) => [e.desc, String(e.amount), e.cat, e.desc, e.date, e.method]),
+      [],
+      ["INCOME", "Amount", "Name", "Type"],
+      ...income.map((i) => [i.name, String(i.amount), i.name, i.type]),
+      [],
+      ["SUMMARY", "Value"],
+      ["Total Income", String(totalIncome)],
+      ["Total Spent", String(totalSpent)],
+      ["Remaining", String(remaining)],
+    ];
+    downloadCsv(`lifeos-${activeMonth.id}.csv`, rows);
   }
 
   // ─── ACTIONS ────────────────────────────────────────
@@ -234,11 +300,51 @@ export default function Dashboard() {
     setExpenses(prev => prev.filter(e => e.id !== id));
   }
 
-  async function handleAddIncome() {
+  async function handleSaveIncome() {
     const mid = activeMonth?.id;
     if (!user || !mid || !canEdit || !incForm.name || !incForm.amount) return;
-    await DB.addIncome(user.uid, mid, { name: incForm.name, amount: parseFloat(incForm.amount), type: incForm.type });
+    const payload = { name: incForm.name, amount: parseFloat(incForm.amount), type: incForm.type };
+    if (incomeEditId) {
+      await DB.updateIncome(user.uid, mid, incomeEditId, payload);
+    } else {
+      await DB.addIncome(user.uid, mid, payload);
+    }
     setIncForm({ name:"", amount:"", type:"fixed" });
+    setIncomeEditId(null);
+    setModal(null);
+    loadData();
+  }
+
+  function openNewIncomeModal() {
+    if (!canEdit) return;
+    setIncomeEditId(null);
+    setIncForm({ name:"", amount:"", type:"fixed" });
+    setModal("income");
+  }
+
+  function openEditIncomeModal(inc: Income) {
+    if (!canEdit) return;
+    setIncomeEditId(inc.id);
+    setIncForm({ name: inc.name, amount: String(inc.amount), type: inc.type });
+    setModal("income");
+  }
+
+  async function handleSaveDebt() {
+    if (!user || !debtForm.name || !debtForm.total) return;
+    const payload = {
+      name: debtForm.name.trim(),
+      total: parseFloat(debtForm.total),
+      paid: parseFloat(debtForm.paid) || 0,
+      emi: parseFloat(debtForm.emi) || 0,
+      dueDay: debtForm.dueDay ? parseInt(debtForm.dueDay, 10) : undefined,
+    };
+    if (debtEditId) {
+      await DB.updateDebt(user.uid, debtEditId, payload);
+    } else {
+      await DB.addDebt(user.uid, payload);
+    }
+    setDebtForm({ name:"", total:"", paid:"", emi:"", dueDay:"" });
+    setDebtEditId(null);
     setModal(null);
     loadData();
   }
@@ -269,13 +375,20 @@ export default function Dashboard() {
     setSubscriptions((prev) => prev.filter((s) => s.id !== id));
   }
 
+  async function handleDeleteDebt(id: string) {
+    if (!user) return;
+    await DB.deleteDebt(user.uid, id);
+    setDebts((prev) => prev.filter((d) => d.id !== id));
+  }
+
   async function handleSaveSettings() {
     if (!user) return;
     const dn = settingsDisplayName.trim();
     setSettingsSaving(true);
     try {
       await updateDisplayName(dn);
-      await DB.saveProfile(user.uid, { displayName: dn, bio: profileBio.trim() });
+      setCurrencySymbol(CURRENCIES[currencyChoice] ?? "৳");
+      await DB.saveProfile(user.uid, { displayName: dn, bio: profileBio.trim(), currency: currencyChoice });
       alert("Profile save hoyeche ✓");
     } catch {
       alert("Save hoyni — abar try koro");
@@ -401,7 +514,7 @@ Give practical, specific, actionable advice. Be encouraging. Keep responses conc
     try {
       const res = await fetch("/api/ai", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: await aiHeaders(),
         body: JSON.stringify({ system, messages: newHistory.map(m => ({ role: m.role === "ai" ? "assistant" : m.role, content: m.content })) }),
       });
       const data = await res.json();
@@ -427,7 +540,7 @@ Give practical, specific, actionable advice. Be encouraging. Keep responses conc
     try {
       const res = await fetch("/api/ai", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: await aiHeaders(),
         body: JSON.stringify({ system: "You are a friendly Bangladeshi financial advisor. Speak in Banglish.", messages: [{ role:"user", content: prompt }] }),
       });
       const data = await res.json();
@@ -488,6 +601,7 @@ Tarpor Publish চাপো.`}
     { id:"budget", label:"Budget Planner", icon:"◎" },
     { id:"income", label:"Income Sources", icon:"↗" },
     { id:"subscriptions", label:"Subscriptions", icon:"◇" },
+    { id:"debts", label:"Debts / EMI", icon:"⬡" },
     { id:"savings", label:"Savings Goals", icon:"♥" },
     { id:"routine", label:"Daily Routine", icon:"▦", section:"Life" },
     { id:"habits", label:"Habit Tracker", icon:"✓" },
@@ -542,7 +656,7 @@ Tarpor Publish চাপো.`}
               ))}
               {canEdit && (
                 <>
-                  <button type="button" className="lifeos-month-action" onClick={handleCloseMonth}>
+                  <button type="button" className="lifeos-month-action" onClick={openCloseMonthModal}>
                     Close month → notun suru
                   </button>
                   <button type="button" className="lifeos-month-action accent" onClick={() => { setModal("newMonth"); setMonthMenuOpen(false); }}>
@@ -565,7 +679,7 @@ Tarpor Publish চাপো.`}
           {navItems.map((item) => (
             <div key={item.id}>
               {item.section && <div style={S.navSection}>{item.section}</div>}
-              <div style={{...S.navItem, ...(activePage===item.id ? S.navItemActive : {})}}
+              <div className="lifeos-nav-item-touch" style={{...S.navItem, ...(activePage===item.id ? S.navItemActive : {})}}
                 onClick={() => { setActivePage(item.id); setNavOpen(false); }}>
                 <span style={{fontSize:14,opacity:0.8}}>{item.icon}</span>
                 {item.label}
@@ -605,6 +719,13 @@ Tarpor Publish চাপো.`}
           <div className="lifeos-page" style={S.page}>
             <div style={{fontSize:11,color:"var(--text3)",fontFamily:"monospace",marginBottom:4}}>{greet}</div>
             <div className="lifeos-welcome-title" style={{fontSize:24,fontWeight:600,letterSpacing:-0.4,marginBottom:24}}>Welcome back, <span style={{color:"var(--accent)"}}>{name}</span></div>
+
+            {debts.filter((d) => d.dueDay === new Date().getDate()).length > 0 && (
+              <div style={{ ...S.notif, background: "rgba(251,191,36,0.08)", borderColor: "rgba(251,191,36,0.25)", color: "var(--amber)" }}>
+                <div style={{ ...S.notifDot, background: "var(--amber)" }} />
+                Aj EMI due: {debts.filter((d) => d.dueDay === new Date().getDate()).map((d) => d.name).join(", ")}
+              </div>
+            )}
 
             {totalIncome > 0 && totalSpent/totalIncome > 0.7 && (
               <div style={S.notif}>
@@ -744,7 +865,7 @@ Tarpor Publish চাপো.`}
         {activePage==="income" && (
           <div className="lifeos-page" style={S.page}>
             <PageHeader title="Income Sources" sub="multiple sources — ekta jaegay">
-              <Btn onClick={()=>setModal("income")} accent>+ Add Source</Btn>
+              <Btn onClick={openNewIncomeModal} accent>+ Add Source</Btn>
             </PageHeader>
             <div style={S.metricsGrid}>
               {[
@@ -760,9 +881,12 @@ Tarpor Publish চাপো.`}
                   <div style={{fontSize:10,color:"var(--text3)",textTransform:"uppercase",letterSpacing:"0.08em",fontFamily:"monospace",marginBottom:8}}>{inc.type}</div>
                   <div style={{fontSize:14,fontWeight:500}}>{inc.name}</div>
                   <div style={{fontSize:26,fontWeight:600,fontFamily:"monospace",letterSpacing:-0.5,margin:"8px 0"}}>{fmt(inc.amount)}</div>
-                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8}}>
                     <div style={{fontSize:11,color:"var(--text3)"}}>Per month</div>
-                    <span onClick={()=>handleDeleteIncome(inc.id)} style={{fontSize:18,color:"var(--red)",cursor:"pointer",opacity:0.4}}>×</span>
+                    <div style={{display:"flex",gap:6}}>
+                      {canEdit && <button type="button" onClick={()=>openEditIncomeModal(inc)} style={{fontSize:12,color:"var(--accent)",background:"none",border:"none",cursor:"pointer",fontFamily:"inherit"}}>✎</button>}
+                      {canEdit && <span onClick={()=>handleDeleteIncome(inc.id)} style={{fontSize:18,color:"var(--red)",cursor:"pointer",opacity:0.4}}>×</span>}
+                    </div>
                   </div>
                 </div>
               ))}
@@ -811,6 +935,49 @@ Tarpor Publish চাপো.`}
                 </div>
               ))}
               {!subscriptions.length && <Empty icon="◇" text="Kono subscription nei — streaming, SIM, gym add koro" />}
+            </div>
+          </div>
+        )}
+
+        {/* ── DEBTS ── */}
+        {activePage==="debts" && (
+          <div className="lifeos-page" style={S.page}>
+            <PageHeader title="Debts / EMI" sub="loan, credit card, dhar — global track">
+              <Btn onClick={()=>{ setDebtEditId(null); setDebtForm({ name:"", total:"", paid:"", emi:"", dueDay:"" }); setModal("debt"); }} accent>+ Add Debt</Btn>
+            </PageHeader>
+            <div style={S.metricsGrid}>
+              {[
+                { label: "Remaining", value: fmt(totalDebtRemaining) },
+                { label: "Monthly EMI", value: fmt(totalEmiMonthly) },
+                { label: "Accounts", value: String(debts.length) },
+              ].map((m) => (
+                <div key={m.label} style={S.metricCard}>
+                  <div style={S.metricLabel}>{m.label}</div>
+                  <div className="lifeos-metric-value" style={S.metricValue}>{m.value}</div>
+                </div>
+              ))}
+            </div>
+            <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(260px,1fr))", gap:14 }}>
+              {debts.map((d) => {
+                const pct = d.total ? Math.min(100, Math.round((d.paid / d.total) * 100)) : 0;
+                return (
+                  <div key={d.id} style={S.card}>
+                    <div style={{ fontSize:14, fontWeight:500, marginBottom:8 }}>{d.name}</div>
+                    <div style={{ fontSize:11, color:"var(--text3)", fontFamily:"monospace", marginBottom:6 }}>
+                      Paid {fmt(d.paid)} / {fmt(d.total)} · EMI {fmt(d.emi)}
+                    </div>
+                    <div style={{ height:6, background:"var(--bg4)", borderRadius:3, overflow:"hidden", marginBottom:8 }}>
+                      <div style={{ height:"100%", width:`${pct}%`, background:"var(--teal)", borderRadius:3 }} />
+                    </div>
+                    {d.dueDay && <div style={{ fontSize:10, color:"var(--amber)", fontFamily:"monospace" }}>Due day: {d.dueDay}</div>}
+                    <div style={{ display:"flex", justifyContent:"flex-end", gap:8, marginTop:10 }}>
+                      <button type="button" onClick={()=>{ setDebtEditId(d.id); setDebtForm({ name:d.name, total:String(d.total), paid:String(d.paid), emi:String(d.emi), dueDay:d.dueDay?String(d.dueDay):"" }); setModal("debt"); }} style={{ fontSize:12, color:"var(--accent)", background:"none", border:"none", cursor:"pointer" }}>✎</button>
+                      <span onClick={()=>handleDeleteDebt(d.id)} style={{ fontSize:18, color:"var(--red)", cursor:"pointer", opacity:0.4 }}>×</span>
+                    </div>
+                  </div>
+                );
+              })}
+              {!debts.length && <Empty icon="⬡" text="Kono debt add koro — loan, card, dhar" />}
             </div>
           </div>
         )}
@@ -997,6 +1164,7 @@ Tarpor Publish চাপো.`}
         {activePage==="report" && (
           <div className="lifeos-page" style={S.page}>
             <PageHeader title="Monthly Report" sub={monthLabel}>
+              <Btn onClick={exportMonthCsv}>Export CSV</Btn>
               <Btn onClick={generateReport} accent>{reportLoading?"Generating...":"AI Analysis ↗"}</Btn>
             </PageHeader>
             <div className="lifeos-report-stats">
@@ -1050,6 +1218,13 @@ Tarpor Publish চাপো.`}
               <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
                 <FormField label="Display name">
                   <input style={S.input} value={settingsDisplayName} onChange={(e) => setSettingsDisplayName(e.target.value)} placeholder="Tomar naam" />
+                </FormField>
+                <FormField label="Currency">
+                  <select style={S.input} value={currencyChoice} onChange={(e) => setCurrencyChoice(e.target.value)}>
+                    {Object.keys(CURRENCIES).map((c) => (
+                      <option key={c} value={c}>{c} ({CURRENCIES[c]})</option>
+                    ))}
+                  </select>
                 </FormField>
                 <FormField label="Bio (optional)">
                   <textarea style={{ ...S.input, resize:"none", minHeight:88 }} value={profileBio} onChange={(e) => setProfileBio(e.target.value)} placeholder="Choto intro — nijeke remind korar jonno" />
@@ -1152,17 +1327,62 @@ Tarpor Publish চাপো.`}
             </>}
 
             {modal==="income" && <>
-              <div style={S.modalTitle}>New Income Source</div>
+              <div style={S.modalTitle}>{incomeEditId ? "Edit Income" : "New Income Source"}</div>
               <div style={{display:"flex",flexDirection:"column",gap:12}}>
                 <FormField label="Source Name"><input style={S.input} value={incForm.name} onChange={e=>setIncForm(p=>({...p,name:e.target.value}))} placeholder="Freelance, Job, Tuition..."/></FormField>
                 <div className="lifeos-form-grid-2">
-                  <FormField label="Amount (৳)"><input style={S.input} type="number" value={incForm.amount} onChange={e=>setIncForm(p=>({...p,amount:e.target.value}))} placeholder="0"/></FormField>
+                  <FormField label="Amount"><input style={S.input} type="number" value={incForm.amount} onChange={e=>setIncForm(p=>({...p,amount:e.target.value}))} placeholder="0"/></FormField>
                   <FormField label="Type"><select style={S.input} value={incForm.type} onChange={e=>setIncForm(p=>({...p,type:e.target.value}))}>
                     <option value="fixed">Fixed</option><option value="variable">Variable</option><option value="irregular">Irregular</option>
                   </select></FormField>
                 </div>
               </div>
-              <ModalActions onCancel={()=>setModal(null)} onSave={handleAddIncome}/>
+              <ModalActions onCancel={()=>setModal(null)} onSave={handleSaveIncome}/>
+            </>}
+
+            {modal==="closeMonth" && closeSummary && (
+              <>
+                <div style={S.modalTitle}>Close {activeMonth?.label}?</div>
+                <p style={{ fontSize:12, color:"var(--text3)", marginBottom:14, lineHeight:1.5 }}>Month summary save hobe, tarpor notun month khulbe.</p>
+                <div className="lifeos-report-stats" style={{ marginBottom:14 }}>
+                  {[
+                    { label:"Income", value: fmt(closeSummary.income) },
+                    { label:"Spent", value: fmt(closeSummary.spent) },
+                    { label:"Saved", value: fmt(closeSummary.remaining) },
+                  ].map((m) => (
+                    <div key={m.label} style={{ ...S.card, textAlign:"center", padding:12 }}>
+                      <div style={{ fontSize:18, fontWeight:600, fontFamily:"monospace" }}>{m.value}</div>
+                      <div style={{ fontSize:9, color:"var(--text3)", textTransform:"uppercase", marginTop:4 }}>{m.label}</div>
+                    </div>
+                  ))}
+                </div>
+                <div style={{ fontSize:11, color:"var(--text3)", fontFamily:"monospace", marginBottom:12 }}>
+                  {closeSummary.expenseCount} expenses · {closeSummary.goalCount} goals · tasks {closeSummary.tasksDone}/{closeSummary.tasksTotal}
+                </div>
+                <label style={{ fontSize:12, color:"var(--text2)", display:"flex", gap:8, alignItems:"center", marginBottom:8 }}>
+                  <input type="checkbox" checked={copyRoutine} onChange={(e) => setCopyRoutine(e.target.checked)} /> Routine copy (done reset)
+                </label>
+                <label style={{ fontSize:12, color:"var(--text2)", display:"flex", gap:8, alignItems:"center", marginBottom:16 }}>
+                  <input type="checkbox" checked={copyHabitsOpt} onChange={(e) => setCopyHabitsOpt(e.target.checked)} /> Habits copy (fresh log)
+                </label>
+                <ModalActions onCancel={() => { setModal(null); setCloseSummary(null); }} onSave={confirmCloseMonth} />
+              </>
+            )}
+
+            {modal==="debt" && <>
+              <div style={S.modalTitle}>{debtEditId ? "Edit Debt" : "New Debt / EMI"}</div>
+              <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
+                <FormField label="Name"><input style={S.input} value={debtForm.name} onChange={(e) => setDebtForm((p) => ({ ...p, name: e.target.value }))} placeholder="Credit card, Bike loan..." /></FormField>
+                <div className="lifeos-form-grid-2">
+                  <FormField label="Total amount"><input style={S.input} type="number" value={debtForm.total} onChange={(e) => setDebtForm((p) => ({ ...p, total: e.target.value }))} /></FormField>
+                  <FormField label="Paid so far"><input style={S.input} type="number" value={debtForm.paid} onChange={(e) => setDebtForm((p) => ({ ...p, paid: e.target.value }))} /></FormField>
+                </div>
+                <div className="lifeos-form-grid-2">
+                  <FormField label="Monthly EMI"><input style={S.input} type="number" value={debtForm.emi} onChange={(e) => setDebtForm((p) => ({ ...p, emi: e.target.value }))} /></FormField>
+                  <FormField label="Due day (1-31)"><input style={S.input} type="number" min={1} max={31} value={debtForm.dueDay} onChange={(e) => setDebtForm((p) => ({ ...p, dueDay: e.target.value }))} /></FormField>
+                </div>
+              </div>
+              <ModalActions onCancel={() => setModal(null)} onSave={handleSaveDebt} />
             </>}
 
             {modal==="goal" && <>
@@ -1211,6 +1431,12 @@ Tarpor Publish চাপো.`}
                     <input style={S.input} type="number" min={1} max={12} value={newMonthForm.month} onChange={(e) => setNewMonthForm((p) => ({ ...p, month: e.target.value }))} />
                   </FormField>
                 </div>
+                <label style={{ fontSize:12, color:"var(--text2)", display:"flex", gap:8, alignItems:"center" }}>
+                  <input type="checkbox" checked={copyRoutine} onChange={(e) => setCopyRoutine(e.target.checked)} /> Routine copy
+                </label>
+                <label style={{ fontSize:12, color:"var(--text2)", display:"flex", gap:8, alignItems:"center" }}>
+                  <input type="checkbox" checked={copyHabitsOpt} onChange={(e) => setCopyHabitsOpt(e.target.checked)} /> Habits copy
+                </label>
               </div>
               <ModalActions onCancel={() => setModal(null)} onSave={handleCreateMonth} />
             </>}
