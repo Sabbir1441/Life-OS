@@ -25,15 +25,35 @@ export type CopyOptions = { tasks: boolean; habits: boolean };
 
 export type MonthStatus = "active" | "closed";
 
+export type MonthCreateOpts = { label: string; startDate: string };
+
 export type PlannerMonth = {
   id: string;
   label: string;
   year: number;
   month: number;
+  startDate?: string;
   status: MonthStatus;
   createdAt?: unknown;
   closedAt?: unknown;
 };
+
+function parseMonthDoc(id: string, data: Record<string, unknown>): PlannerMonth {
+  return {
+    id,
+    label: String(data.label ?? id),
+    year: Number(data.year) || 0,
+    month: Number(data.month) || 0,
+    startDate: typeof data.startDate === "string" ? data.startDate : undefined,
+    status: data.status === "closed" ? "closed" : "active",
+    createdAt: data.createdAt,
+    closedAt: data.closedAt,
+  };
+}
+
+function monthSortKey(m: PlannerMonth) {
+  return m.startDate || `${m.year}-${String(m.month).padStart(2, "0")}-01`;
+}
 
 const defaultBudget = {
   Food: 8000,
@@ -75,34 +95,21 @@ async function setActiveMonthId(uid: string, monthId: string) {
 export async function getMonths(uid: string): Promise<PlannerMonth[]> {
   const snap = await getDocs(collection(db, "users", uid, "months"));
   return snap.docs
-    .map((d) => {
-      const data = d.data();
-      return {
-        id: d.id,
-        label: String(data.label ?? d.id),
-        year: Number(data.year) || 0,
-        month: Number(data.month) || 0,
-        status: (data.status === "closed" ? "closed" : "active") as MonthStatus,
-        createdAt: data.createdAt,
-        closedAt: data.closedAt,
-      };
-    })
-    .sort((a, b) => b.year - a.year || b.month - a.month);
+    .map((d) => parseMonthDoc(d.id, d.data() as Record<string, unknown>))
+    .sort((a, b) => monthSortKey(b).localeCompare(monthSortKey(a)));
 }
 
 export async function getMonth(uid: string, monthId: string): Promise<PlannerMonth | null> {
   const snap = await getDoc(doc(db, "users", uid, "months", monthId));
   if (!snap.exists()) return null;
-  const data = snap.data();
-  return {
-    id: snap.id,
-    label: String(data.label ?? snap.id),
-    year: Number(data.year) || 0,
-    month: Number(data.month) || 0,
-    status: data.status === "closed" ? "closed" : "active",
-    createdAt: data.createdAt,
-    closedAt: data.closedAt,
-  };
+  return parseMonthDoc(snap.id, snap.data() as Record<string, unknown>);
+}
+
+async function initMonthSettings(uid: string, monthId: string) {
+  await setDoc(doc(db, "users", uid, "months", monthId, "settings", "budget"), defaultBudget);
+  await setDoc(doc(db, "users", uid, "months", monthId, "settings", "tasks"), { tasks: [] });
+  await setDoc(doc(db, "users", uid, "months", monthId, "settings", "habits"), { habits: [] });
+  await setDoc(doc(db, "users", uid, "months", monthId, "settings", "habitLogs"), {});
 }
 
 export async function createMonth(
@@ -115,21 +122,54 @@ export async function createMonth(
   const existing = await getMonth(uid, id);
   if (existing) return existing;
 
+  const startDate = `${year}-${String(month).padStart(2, "0")}-01`;
   const label = monthLabelFromParts(year, month);
   await setDoc(doc(db, "users", uid, "months", id), {
     label,
+    year,
+    month,
+    startDate,
+    status,
+    createdAt: serverTimestamp(),
+  });
+
+  await initMonthSettings(uid, id);
+  return { id, label, year, month, startDate, status };
+}
+
+/** Named planner period — start date theke count, custom naam. */
+export async function createNamedMonth(
+  uid: string,
+  opts: MonthCreateOpts,
+  status: MonthStatus = "active"
+): Promise<PlannerMonth> {
+  const id = `m_${Date.now()}`;
+  const d = new Date(opts.startDate + "T12:00:00");
+  const year = d.getFullYear();
+  const month = d.getMonth() + 1;
+  const label = opts.label.trim() || monthLabelFromParts(year, month);
+
+  await setDoc(doc(db, "users", uid, "months", id), {
+    label,
+    startDate: opts.startDate,
     year,
     month,
     status,
     createdAt: serverTimestamp(),
   });
 
-  await setDoc(doc(db, "users", uid, "months", id, "settings", "budget"), defaultBudget);
-  await setDoc(doc(db, "users", uid, "months", id, "settings", "tasks"), { tasks: [] });
-  await setDoc(doc(db, "users", uid, "months", id, "settings", "habits"), { habits: [] });
-  await setDoc(doc(db, "users", uid, "months", id, "settings", "habitLogs"), {});
+  await initMonthSettings(uid, id);
+  return { id, label, year, month, startDate: opts.startDate, status };
+}
 
-  return { id, label, year, month, status };
+async function closeAllActiveMonths(uid: string) {
+  const openMonths = (await getMonths(uid)).filter((m) => m.status === "active");
+  for (const m of openMonths) {
+    await updateDoc(doc(db, "users", uid, "months", m.id), {
+      status: "closed",
+      closedAt: serverTimestamp(),
+    });
+  }
 }
 
 /** Copy legacy flat collections into the first month (one-time). */
@@ -247,19 +287,12 @@ export async function copyPlannerFromMonth(
 
 export async function startCustomMonth(
   uid: string,
-  year: number,
-  month: number,
+  opts: MonthCreateOpts,
   copyFromId?: string,
   copyOpts?: CopyOptions
 ): Promise<PlannerMonth> {
-  const openMonths = (await getMonths(uid)).filter((m) => m.status === "active");
-  for (const m of openMonths) {
-    await updateDoc(doc(db, "users", uid, "months", m.id), {
-      status: "closed",
-      closedAt: serverTimestamp(),
-    });
-  }
-  const created = await createMonth(uid, year, month, "active");
+  await closeAllActiveMonths(uid);
+  const created = await createNamedMonth(uid, opts, "active");
   if (copyFromId && copyOpts && (copyOpts.tasks || copyOpts.habits)) {
     await copyPlannerFromMonth(uid, copyFromId, created.id, copyOpts);
   }
@@ -270,7 +303,8 @@ export async function startCustomMonth(
 export async function closeMonthAndStartNext(
   uid: string,
   currentMonthId: string,
-  copyOpts?: CopyOptions
+  copyOpts?: CopyOptions,
+  nextOpts?: MonthCreateOpts
 ): Promise<{ closed: PlannerMonth; next: PlannerMonth; summary: MonthSummary }> {
   const current = await getMonth(uid, currentMonthId);
   if (!current) throw new Error("Month not found");
@@ -283,8 +317,13 @@ export async function closeMonthAndStartNext(
     closedAt: serverTimestamp(),
   });
 
-  const nextParts = nextMonthParts(current.year, current.month);
-  const newMonth = await createMonth(uid, nextParts.year, nextParts.month, "active");
+  const startDate = nextOpts?.startDate ?? new Date().toISOString().slice(0, 10);
+  const d = new Date(startDate + "T12:00:00");
+  const label =
+    nextOpts?.label?.trim() ||
+    monthLabelFromParts(d.getFullYear(), d.getMonth() + 1);
+
+  const newMonth = await createNamedMonth(uid, { label, startDate }, "active");
   if (copyOpts && (copyOpts.tasks || copyOpts.habits)) {
     await copyPlannerFromMonth(uid, currentMonthId, newMonth.id, copyOpts);
   }

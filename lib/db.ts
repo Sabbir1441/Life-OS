@@ -91,6 +91,49 @@ export async function deleteDebt(uid: string, id: string) {
   return deleteDoc(doc(db, "users", uid, "debts", id));
 }
 
+// ─── TODOS (global task list) ────────────────────────
+export async function addTodo(uid: string, data: Record<string, unknown>) {
+  return addDoc(collection(db, "users", uid, "todos"), {
+    ...data,
+    done: false,
+    createdAt: serverTimestamp(),
+  });
+}
+
+export async function getTodos(uid: string) {
+  const snap = await getDocs(collection(db, "users", uid, "todos"));
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+}
+
+export async function updateTodo(uid: string, id: string, data: Record<string, unknown>) {
+  return updateDoc(doc(db, "users", uid, "todos", id), data);
+}
+
+export async function deleteTodo(uid: string, id: string) {
+  return deleteDoc(doc(db, "users", uid, "todos", id));
+}
+
+// ─── LENDING / DHAR (global P2P money) ───────────────
+export async function addLending(uid: string, data: Record<string, unknown>) {
+  return addDoc(collection(db, "users", uid, "lending"), {
+    ...data,
+    createdAt: serverTimestamp(),
+  });
+}
+
+export async function getLending(uid: string) {
+  const snap = await getDocs(collection(db, "users", uid, "lending"));
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+}
+
+export async function updateLending(uid: string, id: string, data: Record<string, unknown>) {
+  return updateDoc(doc(db, "users", uid, "lending", id), data);
+}
+
+export async function deleteLending(uid: string, id: string) {
+  return deleteDoc(doc(db, "users", uid, "lending", id));
+}
+
 // ─── SUBSCRIPTIONS (global — recurring across months) ─
 export async function addSubscription(uid: string, data: Record<string, unknown>) {
   return addDoc(collection(db, "users", uid, "subscriptions"), {

@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import { Sora } from "next/font/google";
 import "./globals.css";
 import { AuthProvider } from "@/lib/auth-context";
+import { LifeOSInit } from "@/components/lifeos-init";
 
 const sora = Sora({ subsets: ["latin"], weight: ["300","400","500","600"] });
 
@@ -21,6 +22,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en">
       <body className={sora.className}>
+        <LifeOSInit />
         <AuthProvider>{children}</AuthProvider>
       </body>
     </html>

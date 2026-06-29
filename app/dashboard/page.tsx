@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth-context";
 import * as DB from "@/lib/db";
@@ -7,6 +7,15 @@ import * as Months from "@/lib/months";
 import type { PlannerMonth, MonthSummary } from "@/lib/months";
 import { fmt, setCurrencySymbol } from "@/lib/format";
 import { downloadCsv } from "@/lib/export-csv";
+import { downloadMonthPdf } from "@/lib/export-pdf";
+import { monthGrid, buildCalendarEvents, dateKey } from "@/lib/calendar-utils";
+import { useSyncStatus } from "@/lib/use-sync-status";
+import { buildDueReminders, requestNotificationPermission, showSystemNotification } from "@/lib/notifications";
+import { openWhatsAppReminder, buildReminderMessage } from "@/lib/whatsapp";
+import { VoiceMic } from "@/components/voice-mic";
+import { buildDailyBrief, deadlineLabel } from "@/lib/daily-brief";
+import { sortUrgentFirst, splitUrgentNormal } from "@/lib/sort-priority";
+import { MorningBriefScheduler } from "@/components/morning-brief-scheduler";
 
 // ─── TYPES ───────────────────────────────────────────
 type Expense = { id: string; amount: number; cat: string; desc: string; date: string; method: string };
@@ -17,6 +26,17 @@ type Habit = { id: string; name: string; freq: number; color: string };
 type MoodLog = { id: string; mood: number; label: string; note: string; energy: number; date: string };
 type Subscription = { id: string; name: string; amount: number; cycle: "monthly" | "yearly"; note?: string };
 type Debt = { id: string; name: string; total: number; paid: number; emi: number; dueDay?: number };
+type Todo = { id: string; title: string; note?: string; priority: "low" | "medium" | "high"; dueDate?: string; done: boolean; urgent?: boolean };
+type Lending = {
+  id: string;
+  person: string;
+  amount: number;
+  direction: "borrowed" | "lent";
+  status: "processing" | "pending" | "completed";
+  dueDate?: string;
+  note?: string;
+  urgent?: boolean;
+};
 
 const CURRENCIES: Record<string, string> = { BDT: "৳", USD: "$", EUR: "€", GBP: "£" };
 
@@ -50,10 +70,25 @@ export default function Dashboard() {
   const [months, setMonths] = useState<PlannerMonth[]>([]);
   const [activeMonth, setActiveMonth] = useState<PlannerMonth | null>(null);
   const [monthMenuOpen, setMonthMenuOpen] = useState(false);
-  const [newMonthForm, setNewMonthForm] = useState(() => {
+  const [newMonthForm, setNewMonthForm] = useState(() => ({
+    label: "",
+    startDate: todayStr(),
+  }));
+  const [nextMonthForm, setNextMonthForm] = useState(() => ({
+    label: "",
+    startDate: todayStr(),
+  }));
+  const [todos, setTodos] = useState<Todo[]>([]);
+  const [lending, setLending] = useState<Lending[]>([]);
+  const [todoFilter, setTodoFilter] = useState<"all" | "active" | "done">("active");
+  const [lendingFilter, setLendingFilter] = useState<"all" | "borrowed" | "lent" | "open">("open");
+  const [calendarMonth, setCalendarMonth] = useState(() => {
     const d = new Date();
-    return { year: String(d.getFullYear()), month: String(d.getMonth() + 1) };
+    return { year: d.getFullYear(), month: d.getMonth() };
   });
+  const [notifOpen, setNotifOpen] = useState(false);
+  const [whatsappPhone, setWhatsappPhone] = useState("");
+  const syncStatus = useSyncStatus();
 
   // AI
   const [aiMessages, setAiMessages] = useState<{role:string;content:string}[]>([{role:"ai",content:"Assalamu alaikum! Ami tomar LifeOS AI advisor 🙌\n\nTomar income, expense, routine — sob analyze kore advice dite pari. Ki jante chao?"}]);
@@ -72,6 +107,10 @@ export default function Dashboard() {
   const [debts, setDebts] = useState<Debt[]>([]);
   const [debtForm, setDebtForm] = useState({ name:"", total:"", paid:"", emi:"", dueDay:"" });
   const [debtEditId, setDebtEditId] = useState<string | null>(null);
+  const [todoForm, setTodoForm] = useState({ title: "", note: "", priority: "medium" as Todo["priority"], dueDate: "", urgent: false });
+  const [todoEditId, setTodoEditId] = useState<string | null>(null);
+  const [lendingForm, setLendingForm] = useState({ person: "", amount: "", direction: "borrowed" as Lending["direction"], dueDate: "", note: "", urgent: false });
+  const [lendingEditId, setLendingEditId] = useState<string | null>(null);
   const [closeSummary, setCloseSummary] = useState<MonthSummary | null>(null);
   const [copyRoutine, setCopyRoutine] = useState(true);
   const [copyHabitsOpt, setCopyHabitsOpt] = useState(true);
@@ -103,7 +142,7 @@ export default function Dashboard() {
       setActiveMonth(active);
       setMonths(allMonths);
 
-      const [exps, incs, subs, bud, gls, tsk, hab, hlogs, mds, prof, dbt] = await Promise.all([
+      const [exps, incs, subs, bud, gls, tsk, hab, hlogs, mds, prof, dbt, tds, lnd] = await Promise.all([
         DB.getExpenses(user.uid, mid),
         DB.getIncome(user.uid, mid),
         DB.getSubscriptions(user.uid),
@@ -115,6 +154,8 @@ export default function Dashboard() {
         DB.getMoods(user.uid, mid),
         DB.getProfile(user.uid),
         DB.getDebts(user.uid),
+        DB.getTodos(user.uid),
+        DB.getLending(user.uid),
       ]);
       setExpenses(exps as Expense[]);
       setIncome(incs as Income[]);
@@ -134,6 +175,7 @@ export default function Dashboard() {
       setMoods(mds as MoodLog[]);
       const p = prof as Record<string, unknown>;
       setProfileBio(typeof p.bio === "string" ? p.bio : "");
+      setWhatsappPhone(typeof p.whatsappPhone === "string" ? p.whatsappPhone : "");
       setSettingsDisplayName(user.displayName || (typeof p.displayName === "string" ? p.displayName : "") || "");
       const cur = typeof p.currency === "string" ? p.currency : "BDT";
       setCurrencyChoice(cur);
@@ -146,6 +188,27 @@ export default function Dashboard() {
         paid: typeof r.paid === "number" ? r.paid : parseFloat(String(r.paid)) || 0,
         emi: typeof r.emi === "number" ? r.emi : parseFloat(String(r.emi)) || 0,
         dueDay: typeof r.dueDay === "number" ? r.dueDay : undefined,
+      })));
+      const rawTodos = tds as Record<string, unknown>[];
+      setTodos(rawTodos.map((r) => ({
+        id: r.id as string,
+        title: String(r.title ?? ""),
+        note: typeof r.note === "string" ? r.note : undefined,
+        priority: (r.priority === "low" || r.priority === "high" ? r.priority : "medium") as Todo["priority"],
+        dueDate: typeof r.dueDate === "string" ? r.dueDate : undefined,
+        done: Boolean(r.done),
+        urgent: Boolean(r.urgent),
+      })).sort((a, b) => Number(a.done) - Number(b.done)));
+      const rawLending = lnd as Record<string, unknown>[];
+      setLending(rawLending.map((r) => ({
+        id: r.id as string,
+        person: String(r.person ?? ""),
+        amount: typeof r.amount === "number" ? r.amount : parseFloat(String(r.amount)) || 0,
+        direction: r.direction === "lent" ? "lent" : "borrowed",
+        status: r.status === "completed" ? "completed" : r.status === "pending" ? "pending" : "processing",
+        dueDate: typeof r.dueDate === "string" ? r.dueDate : undefined,
+        note: typeof r.note === "string" ? r.note : undefined,
+        urgent: Boolean(r.urgent),
       })));
     } catch (e: unknown) {
       const code = typeof e === "object" && e && "code" in e ? String((e as { code?: string }).code) : "";
@@ -165,6 +228,8 @@ export default function Dashboard() {
       setExpenseEditId(null);
       setIncomeEditId(null);
       setDebtEditId(null);
+      setTodoEditId(null);
+      setLendingEditId(null);
     }
   }, [modal]);
 
@@ -184,6 +249,33 @@ export default function Dashboard() {
     return () => window.removeEventListener("resize", onResize);
   }, []);
 
+  const dueReminders = useMemo(
+    () =>
+      buildDueReminders({
+        debts,
+        subscriptions,
+        todos,
+        lending,
+        today: todayStr(),
+        dayOfMonth: new Date().getDate(),
+        fmt,
+      }),
+    [debts, subscriptions, todos, lending]
+  );
+
+  useEffect(() => {
+    if (!user || dataLoading || dueReminders.length === 0) return;
+    if (typeof window === "undefined" || !("Notification" in window)) return;
+    if (Notification.permission !== "granted") return;
+    const key = `lifeos-notif-${todayStr()}`;
+    if (sessionStorage.getItem(key)) return;
+    sessionStorage.setItem(key, "1");
+    showSystemNotification(
+      "LifeOS — Ajke due",
+      dueReminders.slice(0, 3).map((r) => r.title).join(", ")
+    );
+  }, [user, dataLoading, dueReminders]);
+
   // ─── COMPUTED ───────────────────────────────────────
   const canEdit = activeMonth?.status === "active";
   const monthLabel = activeMonth?.label ?? "This month";
@@ -195,6 +287,38 @@ export default function Dashboard() {
   const totalSubMonthly = subscriptions.reduce((s, sub) => s + subMonthly(sub), 0);
   const totalDebtRemaining = debts.reduce((s, d) => s + Math.max(0, d.total - d.paid), 0);
   const totalEmiMonthly = debts.reduce((s, d) => s + d.emi, 0);
+  const activeTodos = todos.filter((t) => !t.done);
+  const openLending = lending.filter((l) => l.status !== "completed");
+  const monthStartLabel = activeMonth?.startDate
+    ? new Date(activeMonth.startDate + "T12:00:00").toLocaleDateString("en-BD", { day: "numeric", month: "short", year: "numeric" })
+    : "";
+  const calendarEvents = buildCalendarEvents({
+    expenses,
+    todos,
+    tasks,
+    moods,
+    lending,
+    debts,
+    year: calendarMonth.year,
+    month: calendarMonth.month,
+  });
+  const calGrid = monthGrid(calendarMonth.year, calendarMonth.month);
+  const calLabel = new Date(calendarMonth.year, calendarMonth.month, 1).toLocaleDateString("en-BD", { month: "long", year: "numeric" });
+  const today = todayStr();
+  const dailyBrief = useMemo(
+    () =>
+      buildDailyBrief({
+        today,
+        todos,
+        lending,
+        tasks,
+        debts,
+        fmt,
+      }),
+    [today, todos, lending, tasks, debts]
+  );
+  const sortedActiveTodos = useMemo(() => sortUrgentFirst(activeTodos), [activeTodos]);
+  const sortedOpenLending = useMemo(() => sortUrgentFirst(openLending), [openLending]);
 
   async function handleSwitchMonth(monthId: string) {
     if (!user) return;
@@ -207,6 +331,7 @@ export default function Dashboard() {
     if (!user || !activeMonth || !canEdit) return;
     const summary = await Months.buildMonthSummary(user.uid, activeMonth.id);
     setCloseSummary(summary);
+    setNextMonthForm({ label: "", startDate: todayStr() });
     setModal("closeMonth");
     setMonthMenuOpen(false);
   }
@@ -214,7 +339,12 @@ export default function Dashboard() {
   async function confirmCloseMonth() {
     if (!user || !activeMonth) return;
     const copyOpts = { tasks: copyRoutine, habits: copyHabitsOpt };
-    const { next } = await Months.closeMonthAndStartNext(user.uid, activeMonth.id, copyOpts);
+    const { next } = await Months.closeMonthAndStartNext(
+      user.uid,
+      activeMonth.id,
+      copyOpts,
+      { label: nextMonthForm.label, startDate: nextMonthForm.startDate || todayStr() }
+    );
     setCloseSummary(null);
     setModal(null);
     await loadData(next.id);
@@ -222,11 +352,14 @@ export default function Dashboard() {
 
   async function handleCreateMonth() {
     if (!user || !activeMonth) return;
-    const year = parseInt(newMonthForm.year, 10);
-    const month = parseInt(newMonthForm.month, 10);
-    if (!year || month < 1 || month > 12) return;
+    if (!newMonthForm.startDate) return;
     const copyOpts = { tasks: copyRoutine, habits: copyHabitsOpt };
-    const created = await Months.startCustomMonth(user.uid, year, month, activeMonth.id, copyOpts);
+    const created = await Months.startCustomMonth(
+      user.uid,
+      { label: newMonthForm.label, startDate: newMonthForm.startDate },
+      activeMonth.id,
+      copyOpts
+    );
     setModal(null);
     setMonthMenuOpen(false);
     await loadData(created.id);
@@ -381,6 +514,112 @@ export default function Dashboard() {
     setDebts((prev) => prev.filter((d) => d.id !== id));
   }
 
+  function openNewTodoModal() {
+    setTodoEditId(null);
+    setTodoForm({ title: "", note: "", priority: "medium", dueDate: "", urgent: false });
+    setModal("todo");
+  }
+
+  function openEditTodoModal(t: Todo) {
+    setTodoEditId(t.id);
+    setTodoForm({ title: t.title, note: t.note || "", priority: t.priority, dueDate: t.dueDate || "", urgent: Boolean(t.urgent) });
+    setModal("todo");
+  }
+
+  async function handleSaveTodo() {
+    if (!user || !todoForm.title.trim()) return;
+    const payload = {
+      title: todoForm.title.trim(),
+      note: todoForm.note.trim() || undefined,
+      priority: todoForm.priority,
+      dueDate: todoForm.dueDate || undefined,
+      urgent: todoForm.urgent,
+    };
+    if (todoEditId) {
+      await DB.updateTodo(user.uid, todoEditId, payload);
+    } else {
+      await DB.addTodo(user.uid, payload);
+    }
+    setTodoForm({ title: "", note: "", priority: "medium", dueDate: "", urgent: false });
+    setTodoEditId(null);
+    setModal(null);
+    loadData();
+  }
+
+  async function handleToggleTodo(id: string) {
+    if (!user) return;
+    const t = todos.find((x) => x.id === id);
+    if (!t) return;
+    await DB.updateTodo(user.uid, id, { done: !t.done });
+    setTodos((prev) => prev.map((x) => (x.id === id ? { ...x, done: !x.done } : x)));
+  }
+
+  async function handleDeleteTodo(id: string) {
+    if (!user) return;
+    await DB.deleteTodo(user.uid, id);
+    setTodos((prev) => prev.filter((t) => t.id !== id));
+  }
+
+  function openNewLendingModal(direction?: Lending["direction"]) {
+    setLendingEditId(null);
+    setLendingForm({ person: "", amount: "", direction: direction || "borrowed", dueDate: "", note: "", urgent: false });
+    setModal("lending");
+  }
+
+  function openEditLendingModal(l: Lending) {
+    setLendingEditId(l.id);
+    setLendingForm({
+      person: l.person,
+      amount: String(l.amount),
+      direction: l.direction,
+      dueDate: l.dueDate || "",
+      note: l.note || "",
+      urgent: Boolean(l.urgent),
+    });
+    setModal("lending");
+  }
+
+  async function handleSaveLending() {
+    if (!user || !lendingForm.person.trim() || !lendingForm.amount) return;
+    const direction = lendingForm.direction;
+    const payload = {
+      person: lendingForm.person.trim(),
+      amount: parseFloat(lendingForm.amount),
+      direction,
+      dueDate: lendingForm.dueDate || undefined,
+      note: lendingForm.note.trim() || undefined,
+      urgent: lendingForm.urgent,
+    };
+    if (lendingEditId) {
+      const existing = lending.find((l) => l.id === lendingEditId);
+      await DB.updateLending(user.uid, lendingEditId, {
+        ...payload,
+        status: existing?.status ?? (direction === "lent" ? "pending" : "processing"),
+      });
+    } else {
+      await DB.addLending(user.uid, {
+        ...payload,
+        status: direction === "lent" ? "pending" : "processing",
+      });
+    }
+    setLendingForm({ person: "", amount: "", direction: "borrowed", dueDate: "", note: "", urgent: false });
+    setLendingEditId(null);
+    setModal(null);
+    loadData();
+  }
+
+  async function handleCompleteLending(id: string) {
+    if (!user) return;
+    await DB.updateLending(user.uid, id, { status: "completed" });
+    setLending((prev) => prev.map((l) => (l.id === id ? { ...l, status: "completed" } : l)));
+  }
+
+  async function handleDeleteLending(id: string) {
+    if (!user) return;
+    await DB.deleteLending(user.uid, id);
+    setLending((prev) => prev.filter((l) => l.id !== id));
+  }
+
   async function handleSaveSettings() {
     if (!user) return;
     const dn = settingsDisplayName.trim();
@@ -388,12 +627,51 @@ export default function Dashboard() {
     try {
       await updateDisplayName(dn);
       setCurrencySymbol(CURRENCIES[currencyChoice] ?? "৳");
-      await DB.saveProfile(user.uid, { displayName: dn, bio: profileBio.trim(), currency: currencyChoice });
+      await DB.saveProfile(user.uid, {
+        displayName: dn,
+        bio: profileBio.trim(),
+        currency: currencyChoice,
+        whatsappPhone: whatsappPhone.trim(),
+      });
       alert("Profile save hoyeche ✓");
     } catch {
       alert("Save hoyni — abar try koro");
     }
     setSettingsSaving(false);
+  }
+
+  async function enablePushReminders() {
+    const perm = await requestNotificationPermission();
+    if (perm === "granted") {
+      await showSystemNotification(
+        "LifeOS notifications on ✓",
+        "Phone er notification bar e dekhte PWA install koro (Add to Home Screen) + permission allow koro."
+      );
+      if (dueReminders.length) {
+        await showSystemNotification("LifeOS", `${dueReminders.length} ta reminder — urgent gulo age`);
+      }
+    } else if (perm === "denied") {
+      alert("Notification block — browser settings theke LifeOS allow koro");
+    }
+  }
+
+  function exportMonthPdf() {
+    if (!activeMonth) return;
+    downloadMonthPdf(`lifeos-${activeMonth.id}.pdf`, {
+      monthLabel: activeMonth.label,
+      income: totalIncome,
+      spent: totalSpent,
+      remaining: Math.max(0, remaining),
+      expenseCount: expenses.length,
+      incomeSources: income.map((i) => ({ name: i.name, amount: i.amount })),
+      topExpenses: expenses.slice(0, 15).map((e) => ({ desc: e.desc, amount: e.amount, cat: e.cat, date: e.date })),
+      goals: goals.map((g) => ({ name: g.name, current: g.current, target: g.target })),
+      fmt,
+    });
+  }
+
+  function waRemind(item: { title: string; amount?: string; subtitle?: string }) {
+    openWhatsAppReminder(buildReminderMessage(item), whatsappPhone || undefined);
   }
 
   async function handleSaveBudget() {
@@ -597,13 +875,17 @@ Tarpor Publish চাপো.`}
   // ─── NAV ITEMS ──────────────────────────────────────
   const navItems = [
     { id:"dashboard", label:"Dashboard", icon:"⊞" },
+    { id:"brief", label:"Ajker Din", icon:"☀" },
     { id:"expenses", label:"Expense Tracker", icon:"≡", section:"Money" },
     { id:"budget", label:"Budget Planner", icon:"◎" },
     { id:"income", label:"Income Sources", icon:"↗" },
     { id:"subscriptions", label:"Subscriptions", icon:"◇" },
     { id:"debts", label:"Debts / EMI", icon:"⬡" },
+    { id:"lending", label:"Dhar / Udhár", icon:"⇄" },
     { id:"savings", label:"Savings Goals", icon:"♥" },
-    { id:"routine", label:"Daily Routine", icon:"▦", section:"Life" },
+    { id:"todos", label:"Todo List", icon:"☑", section:"Life" },
+    { id:"calendar", label:"Calendar", icon:"▣" },
+    { id:"routine", label:"Daily Routine", icon:"▦" },
     { id:"habits", label:"Habit Tracker", icon:"✓" },
     { id:"mood", label:"Mood Log", icon:"☺" },
     { id:"report", label:"Monthly Report", icon:"▲" },
@@ -623,6 +905,7 @@ Tarpor Publish চাপো.`}
   // ─── RENDER ─────────────────────────────────────────
   return (
     <div className={`lifeos-app${navOpen ? " nav-open" : ""}`} style={S.app}>
+      <MorningBriefScheduler brief={dailyBrief} ready={!!user && !dataLoading} />
       <div className="lifeos-sidebar-backdrop" onClick={() => setNavOpen(false)} aria-hidden />
 
       {/* SIDEBAR */}
@@ -650,7 +933,14 @@ Tarpor Publish চাপো.`}
                   className={`lifeos-month-option${m.id === activeMonth?.id ? " selected" : ""}`}
                   onClick={() => handleSwitchMonth(m.id)}
                 >
-                  <span>{m.label}</span>
+                  <span style={{ textAlign: "left" }}>
+                    <div>{m.label}</div>
+                    {m.startDate && (
+                      <div style={{ fontSize: 9, color: "var(--text3)", fontFamily: "monospace", marginTop: 2 }}>
+                        {new Date(m.startDate + "T12:00:00").toLocaleDateString("en-BD", { day: "numeric", month: "short", year: "numeric" })}
+                      </div>
+                    )}
+                  </span>
                   <span className="lifeos-month-option-tag">{m.status === "closed" ? "closed" : "active"}</span>
                 </button>
               ))}
@@ -659,8 +949,8 @@ Tarpor Publish চাপো.`}
                   <button type="button" className="lifeos-month-action" onClick={openCloseMonthModal}>
                     Close month → notun suru
                   </button>
-                  <button type="button" className="lifeos-month-action accent" onClick={() => { setModal("newMonth"); setMonthMenuOpen(false); }}>
-                    + Custom month
+                  <button type="button" className="lifeos-month-action accent" onClick={() => { setNewMonthForm({ label: "", startDate: todayStr() }); setModal("newMonth"); setMonthMenuOpen(false); }}>
+                    + Notun mas suru
                   </button>
                 </>
               )}
@@ -691,6 +981,10 @@ Tarpor Publish চাপো.`}
         <div style={S.logout} onClick={async()=>{await logout();router.replace("/login");}}>
           ⎋ Logout
         </div>
+        <div className={`lifeos-sync-bar lifeos-sync-${syncStatus.state}`}>
+          <span className="lifeos-sync-dot" />
+          {syncStatus.label}
+        </div>
       </aside>
 
       <div className="lifeos-main-wrap">
@@ -699,8 +993,28 @@ Tarpor Publish চাপো.`}
             ☰
           </button>
           <div className="lifeos-mobile-title">{activeNavLabel}</div>
-          <div className="lifeos-mobile-sub">LifeOS</div>
+          <button type="button" className="lifeos-notif-btn" onClick={() => setNotifOpen((v) => !v)} aria-label="Reminders">
+            🔔{dueReminders.length > 0 && <span className="lifeos-notif-badge">{dueReminders.length}</span>}
+          </button>
         </header>
+        {notifOpen && (
+          <div className="lifeos-notif-panel">
+            <div className="lifeos-notif-panel-head">
+              <span>Ajker reminders ({dueReminders.length})</span>
+              <button type="button" onClick={enablePushReminders} className="lifeos-notif-enable">Phone notify</button>
+            </div>
+            {dueReminders.length === 0 && <div style={{ fontSize: 12, color: "var(--text3)", padding: 8 }}>Kono due nei ajke ✓</div>}
+            {dueReminders.map((r) => (
+              <div key={r.id} className="lifeos-notif-item">
+                <div>
+                  <div style={{ fontSize: 12, fontWeight: 500 }}>{r.urgent && <span className="lifeos-urgent-pill">URGENT</span>}{r.title}</div>
+                  {r.subtitle && <div style={{ fontSize: 10, color: "var(--text3)" }}>{r.subtitle}</div>}
+                </div>
+                <button type="button" className="lifeos-wa-mini" onClick={() => waRemind(r)} title="WhatsApp">WA</button>
+              </div>
+            ))}
+          </div>
+        )}
 
       {/* MAIN */}
       <main className="lifeos-main" style={S.main}>
@@ -714,11 +1028,63 @@ Tarpor Publish চাপো.`}
           </div>
         )}
 
+        {/* ── AJKER DIN (Morning Brief) ── */}
+        {activePage==="brief" && (
+          <div className="lifeos-page" style={S.page}>
+            <PageHeader title="Ajker Din" sub="Protiday 8 AM e auto list — aj ki ki, pending ki">
+              <Btn onClick={() => setActivePage("todos")}>Todos</Btn>
+              <Btn onClick={enablePushReminders} accent>Phone notify on</Btn>
+            </PageHeader>
+            <div style={{ ...S.notif, marginBottom: 16, background: "rgba(124,111,255,0.06)", borderColor: "rgba(124,111,255,0.2)" }}>
+              <div style={S.notifDot} />
+              Sokol 8:00 AM e list auto update. Notification er jonno &quot;Phone notify on&quot; + home screen e add koro.
+            </div>
+            {[
+              { key: "urgent", title: "Urgent — age koro", items: dailyBrief.sections.urgent, empty: "Kono urgent nei" },
+              { key: "dueToday", title: "Aj deadline / due", items: dailyBrief.sections.dueToday, empty: "Aj kichu due nei" },
+              { key: "pendingTodos", title: "Pending todos", items: dailyBrief.sections.pendingTodos, empty: "Todo clear ✓" },
+              { key: "pendingLending", title: "Pending dhar/udhár", items: dailyBrief.sections.pendingLending, empty: "Dhar clear ✓" },
+              { key: "routine", title: "Ajker routine", items: dailyBrief.sections.routine, empty: "Routine nei" },
+            ].map((sec) => (
+              <div key={sec.key} style={{ ...S.card, marginBottom: 12 }}>
+                <div style={S.sectionTitle}>{sec.title}</div>
+                {sec.items.length === 0 ? (
+                  <div style={{ fontSize: 12, color: "var(--text3)" }}>{sec.empty}</div>
+                ) : (
+                  sec.items.map((item) => (
+                    <div key={item.id} style={{ display: "flex", justifyContent: "space-between", gap: 10, padding: "8px 0", borderBottom: "1px solid var(--border)" }}>
+                      <span style={{ fontSize: 13 }}>{item.label}</span>
+                      {item.meta && <span style={{ fontSize: 10, color: "var(--text3)", fontFamily: "monospace", flexShrink: 0 }}>{item.meta}</span>}
+                    </div>
+                  ))
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+
         {/* ── DASHBOARD ── */}
         {activePage==="dashboard" && (
           <div className="lifeos-page" style={S.page}>
-            <div style={{fontSize:11,color:"var(--text3)",fontFamily:"monospace",marginBottom:4}}>{greet}</div>
-            <div className="lifeos-welcome-title" style={{fontSize:24,fontWeight:600,letterSpacing:-0.4,marginBottom:24}}>Welcome back, <span style={{color:"var(--accent)"}}>{name}</span></div>
+            <div style={{fontSize:11,color:"var(--text3)",fontFamily:"monospace",marginBottom:4}}>{greet}{monthStartLabel ? ` · ${monthLabel} (${monthStartLabel} theke)` : ""}</div>
+            <div className="lifeos-welcome-title" style={{fontSize:24,fontWeight:600,letterSpacing:-0.4,marginBottom:16}}>Welcome back, <span style={{color:"var(--accent)"}}>{name}</span></div>
+
+            <div className="lifeos-quick-actions">
+              <button type="button" className="lifeos-quick-btn is-primary" onClick={openNewExpenseModal} disabled={!canEdit}>
+                Kharch
+              </button>
+              <button type="button" className="lifeos-quick-btn" onClick={openNewTodoModal}>
+                Todo
+                {activeTodos.length > 0 && <span className="lifeos-quick-count">{activeTodos.length}</span>}
+              </button>
+              <button type="button" className="lifeos-quick-btn" onClick={() => setActivePage("todos")}>
+                Tasks
+              </button>
+              <button type="button" className="lifeos-quick-btn" onClick={() => setActivePage("lending")}>
+                Dhar
+                {openLending.length > 0 && <span className="lifeos-quick-count">{openLending.length}</span>}
+              </button>
+            </div>
 
             {debts.filter((d) => d.dueDay === new Date().getDate()).length > 0 && (
               <div style={{ ...S.notif, background: "rgba(251,191,36,0.08)", borderColor: "rgba(251,191,36,0.25)", color: "var(--amber)" }}>
@@ -757,15 +1123,34 @@ Tarpor Publish চাপো.`}
               </div>
               <div style={{display:"flex",flexDirection:"column",gap:14}}>
                 <div style={S.card}>
-                  <div style={S.sectionTitle}>Ajker Routine</div>
-                  {tasks.slice(0,5).map(t => (
-                    <div key={t.id} onClick={()=>handleToggleTask(t.id)} style={{display:"flex",alignItems:"center",gap:8,padding:"7px 8px",borderRadius:6,background:"var(--bg3)",cursor:"pointer",marginBottom:5,opacity:t.done?0.4:1}}>
-                      <div style={{width:6,height:6,borderRadius:"50%",background:catColors[t.cat as keyof typeof catColors]||"var(--accent)",flexShrink:0}}/>
-                      <span style={{fontSize:12,color:"var(--text)",flex:1,textDecoration:t.done?"line-through":"none"}}>{t.name}</span>
-                      <span style={{fontSize:10,color:"var(--text3)",fontFamily:"monospace"}}>{t.time}</span>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                    <div style={S.sectionTitle}>Pending Todos</div>
+                    <button type="button" onClick={() => setActivePage("todos")} style={{ fontSize: 11, color: "var(--accent)", background: "none", border: "none", cursor: "pointer" }}>Shob dekho →</button>
+                  </div>
+                  {sortedActiveTodos.slice(0, 4).map((t) => (
+                    <div key={t.id} onClick={() => handleToggleTodo(t.id)} style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 8px", borderRadius: 6, background: "var(--bg3)", cursor: "pointer", marginBottom: 5 }}>
+                      <div style={{ width: 14, height: 14, borderRadius: 4, border: "1.5px solid var(--border2)", flexShrink: 0 }} />
+                      <span style={{ fontSize: 12, color: "var(--text)", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.urgent && <span className="lifeos-urgent-dot" />}{t.title}</span>
+                      {t.dueDate && <span style={{ fontSize: 9, color: deadlineLabel(t.dueDate, today) === "Overdue" ? "var(--red)" : "var(--amber)", fontFamily: "monospace" }}>{deadlineLabel(t.dueDate, today)}</span>}
                     </div>
                   ))}
-                  {!tasks.length && <Empty icon="🗓" text="Task nei"/>}
+                  {!activeTodos.length && <Empty icon="☑" text="Todo nei — upore ✅ click koro"/>}
+                </div>
+                <div style={S.card}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                    <div style={S.sectionTitle}>Dhar / Udhár</div>
+                    <button type="button" onClick={() => setActivePage("lending")} style={{ fontSize: 11, color: "var(--accent)", background: "none", border: "none", cursor: "pointer" }}>Shob dekho →</button>
+                  </div>
+                  {openLending.slice(0, 3).map((l) => (
+                    <div key={l.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "7px 0", borderBottom: "1px solid var(--border)" }}>
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ fontSize: 12 }}>{l.person}</div>
+                        <div style={{ fontSize: 10, color: "var(--text3)" }}>{l.direction === "borrowed" ? "Niyechi" : "Diyechi"}</div>
+                      </div>
+                      <div style={{ fontSize: 12, fontWeight: 600, fontFamily: "monospace" }}>{fmt(l.amount)}</div>
+                    </div>
+                  ))}
+                  {!openLending.length && <Empty icon="🤝" text="Choloman dhar nei"/>}
                 </div>
                 <div style={S.card}>
                   <div style={S.sectionTitle}>Budget Alert</div>
@@ -982,6 +1367,197 @@ Tarpor Publish চাপো.`}
           </div>
         )}
 
+        {/* ── LENDING / DHAR ── */}
+        {activePage==="lending" && (
+          <div className="lifeos-page" style={S.page}>
+            <PageHeader title="Dhar / Udhár" sub="ke kache theke niyechi, ke kache diyechi — sob track">
+              <Btn onClick={() => openNewLendingModal("borrowed")}>+ Niyechi</Btn>
+              <Btn onClick={() => openNewLendingModal("lent")} accent>+ Diyechi</Btn>
+            </PageHeader>
+            <div className="lifeos-filter-tabs">
+              {[
+                { id: "open" as const, label: "Choloman" },
+                { id: "all" as const, label: "Shob" },
+                { id: "borrowed" as const, label: "Ami niyechi" },
+                { id: "lent" as const, label: "Ami diyechi" },
+              ].map((f) => (
+                <button key={f.id} type="button" className={`lifeos-filter-tab${lendingFilter === f.id ? " active" : ""}`} onClick={() => setLendingFilter(f.id)}>
+                  {f.label}
+                </button>
+              ))}
+            </div>
+            <div style={S.metricsGrid}>
+              {[
+                { label: "Choloman", value: String(openLending.length) },
+                { label: "Ami debe", value: fmt(lending.filter((l) => l.direction === "borrowed" && l.status !== "completed").reduce((s, l) => s + l.amount, 0)) },
+                { label: "Amar debe", value: fmt(lending.filter((l) => l.direction === "lent" && l.status !== "completed").reduce((s, l) => s + l.amount, 0)) },
+              ].map((m) => (
+                <div key={m.label} style={S.metricCard}>
+                  <div style={S.metricLabel}>{m.label}</div>
+                  <div className="lifeos-metric-value" style={S.metricValue}>{m.value}</div>
+                </div>
+              ))}
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(280px,1fr))", gap: 14 }}>
+              {sortUrgentFirst(
+                lending.filter((l) => {
+                  if (lendingFilter === "open") return l.status !== "completed";
+                  if (lendingFilter === "borrowed") return l.direction === "borrowed";
+                  if (lendingFilter === "lent") return l.direction === "lent";
+                  return true;
+                })
+              ).map((l) => (
+                  <div key={l.id} className="lifeos-lending-card" style={{ ...S.card, opacity: l.status === "completed" ? 0.55 : 1, borderColor: l.urgent ? "rgba(248,113,113,0.35)" : undefined }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8, marginBottom: 10 }}>
+                      <div>
+                        <div style={{ fontSize: 14, fontWeight: 500 }}>{l.person}</div>
+                        <div style={{ fontSize: 10, color: "var(--text3)", marginTop: 4 }}>
+                          {l.direction === "borrowed" ? "Ami niyechi" : "Ami diyechi"}
+                        </div>
+                      </div>
+                      <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4 }}>
+                        {l.urgent && <span className="lifeos-urgent-pill">URGENT</span>}
+                        <span className={`lifeos-status-pill ${l.status}`}>
+                          {l.status === "completed" ? "Shesh" : l.status === "pending" ? "Pending" : "Processing"}
+                        </span>
+                      </div>
+                    </div>
+                    <div style={{ fontSize: 22, fontWeight: 600, fontFamily: "monospace", marginBottom: 8 }}>{fmt(l.amount)}</div>
+                    {l.dueDate && <div style={{ fontSize: 10, color: deadlineLabel(l.dueDate, today) === "Overdue" ? "var(--red)" : "var(--amber)", fontFamily: "monospace", marginBottom: 6 }}>{deadlineLabel(l.dueDate, today)}</div>}
+                    {l.note && <div style={{ fontSize: 12, color: "var(--text3)", marginBottom: 8 }}>{l.note}</div>}
+                    <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, flexWrap: "wrap" }}>
+                      {l.status !== "completed" && (
+                        <>
+                          <button type="button" onClick={() => waRemind({ title: `${l.person} — ${fmt(l.amount)} dhar`, subtitle: l.dueDate ? `Due ${l.dueDate}` : undefined })} style={{ ...S.btnStyle, padding: "5px 10px", fontSize: 11 }}>
+                            WA
+                          </button>
+                          <button type="button" onClick={() => handleCompleteLending(l.id)} style={{ ...S.btnStyle, ...S.btnAccent, padding: "5px 12px", fontSize: 11 }}>
+                            Diye dilam ✓
+                          </button>
+                        </>
+                      )}
+                      <button type="button" onClick={() => openEditLendingModal(l)} style={{ fontSize: 12, color: "var(--accent)", background: "none", border: "none", cursor: "pointer" }}>✎</button>
+                      <span onClick={() => handleDeleteLending(l.id)} style={{ fontSize: 18, color: "var(--red)", cursor: "pointer", opacity: 0.4 }}>×</span>
+                    </div>
+                  </div>
+                ))}
+              {!lending.filter((l) => lendingFilter === "open" ? l.status !== "completed" : lendingFilter === "all" ? true : l.direction === lendingFilter).length && (
+                <Empty icon="🤝" text="Kono dhar/udhár nei — + button diye add koro" />
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* ── TODOS ── */}
+        {activePage==="todos" && (
+          <div className="lifeos-page" style={S.page}>
+            <PageHeader title="Todo List" sub="deadline, urgent — urgent gulo age show hobe">
+              <Btn onClick={openNewTodoModal} accent>+ New Todo</Btn>
+            </PageHeader>
+            <div className="lifeos-filter-tabs">
+              {[
+                { id: "active" as const, label: `Choloman (${activeTodos.length})` },
+                { id: "done" as const, label: "Done" },
+                { id: "all" as const, label: "Shob" },
+              ].map((f) => (
+                <button key={f.id} type="button" className={`lifeos-filter-tab${todoFilter === f.id ? " active" : ""}`} onClick={() => setTodoFilter(f.id)}>
+                  {f.label}
+                </button>
+              ))}
+            </div>
+            <div style={S.card}>
+              {(() => {
+                const filtered = todos.filter((t) => {
+                  if (todoFilter === "active") return !t.done;
+                  if (todoFilter === "done") return t.done;
+                  return true;
+                });
+                if (!filtered.length) return <Empty icon="☑" text="Kono todo nei — + New Todo click koro" />;
+                const showGroups = todoFilter === "active";
+                const sorted = sortUrgentFirst(filtered);
+                const { urgent, normal } = splitUrgentNormal(sorted.filter((t) => !t.done));
+                const renderRow = (t: Todo) => (
+                  <div key={t.id} className="lifeos-todo-item" style={{ display: "flex", alignItems: "flex-start", gap: 12, padding: "12px 0", borderBottom: "1px solid var(--border)", opacity: t.done ? 0.45 : 1 }}>
+                    <div onClick={() => handleToggleTodo(t.id)} style={{ width: 20, height: 20, borderRadius: 6, border: "1.5px solid", borderColor: t.done ? "var(--green)" : "var(--border2)", background: t.done ? "var(--green)" : "transparent", flexShrink: 0, marginTop: 2, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                      {t.done && <span style={{ fontSize: 11, color: "#fff" }}>✓</span>}
+                    </div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 14, fontWeight: 500, textDecoration: t.done ? "line-through" : "none" }}>{t.title}</div>
+                      {t.note && <div style={{ fontSize: 12, color: "var(--text3)", marginTop: 4 }}>{t.note}</div>}
+                      <div style={{ display: "flex", gap: 8, marginTop: 6, flexWrap: "wrap" }}>
+                        {t.urgent && <span className="lifeos-urgent-pill">URGENT</span>}
+                        {t.dueDate && <span style={{ fontSize: 10, color: deadlineLabel(t.dueDate, today) === "Overdue" ? "var(--red)" : "var(--text3)", fontFamily: "monospace" }}>{deadlineLabel(t.dueDate, today)}</span>}
+                      </div>
+                    </div>
+                    <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+                      {!t.done && <button type="button" onClick={() => waRemind({ title: t.title, subtitle: t.dueDate ? deadlineLabel(t.dueDate, today) || undefined : undefined })} style={{ fontSize: 10, padding: "4px 8px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg3)", color: "var(--green)", cursor: "pointer" }}>WA</button>}
+                      <button type="button" onClick={() => openEditTodoModal(t)} style={{ fontSize: 12, color: "var(--accent)", background: "none", border: "none", cursor: "pointer" }}>✎</button>
+                      <span onClick={() => handleDeleteTodo(t.id)} style={{ fontSize: 18, color: "var(--red)", cursor: "pointer", opacity: 0.4 }}>×</span>
+                    </div>
+                  </div>
+                );
+                if (!showGroups) return sorted.map(renderRow);
+                return (
+                  <>
+                    {urgent.length > 0 && <div className="lifeos-group-label">Urgent</div>}
+                    {urgent.map(renderRow)}
+                    {normal.length > 0 && urgent.length > 0 && <div className="lifeos-group-label">Onno kaj</div>}
+                    {normal.map(renderRow)}
+                  </>
+                );
+              })()}
+            </div>
+          </div>
+        )}
+
+        {/* ── CALENDAR ── */}
+        {activePage==="calendar" && (
+          <div className="lifeos-page" style={S.page}>
+            <PageHeader title="Calendar" sub="expense, todo, dhar, routine — ek calendar e">
+              <Btn onClick={() => setCalendarMonth((p) => { const d = new Date(p.year, p.month - 1, 1); return { year: d.getFullYear(), month: d.getMonth() }; })}>← Prev</Btn>
+              <Btn onClick={() => setCalendarMonth((p) => { const d = new Date(p.year, p.month + 1, 1); return { year: d.getFullYear(), month: d.getMonth() }; })}>Next →</Btn>
+            </PageHeader>
+            <div style={{ ...S.card, marginBottom: 16 }}>
+              <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 12, textAlign: "center" }}>{calLabel}</div>
+              <div className="lifeos-cal-legend">
+                {[
+                  { c: "var(--accent)", l: "Expense" },
+                  { c: "var(--teal)", l: "Todo" },
+                  { c: "var(--blue)", l: "Routine" },
+                  { c: "var(--amber)", l: "Dhar" },
+                  { c: "var(--red)", l: "EMI" },
+                ].map((x) => (
+                  <span key={x.l}><i style={{ background: x.c }} />{x.l}</span>
+                ))}
+              </div>
+              <div className="lifeos-cal-grid">
+                {["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"].map((d) => (
+                  <div key={d} className="lifeos-cal-head">{d}</div>
+                ))}
+                {calGrid.flat().map((day, i) => {
+                  if (!day) return <div key={`e-${i}`} className="lifeos-cal-cell empty" />;
+                  const key = dateKey(day);
+                  const evs = calendarEvents[key] || [];
+                  const isToday = key === todayStr();
+                  return (
+                    <div key={key} className={`lifeos-cal-cell${isToday ? " today" : ""}`}>
+                      <div className="lifeos-cal-day">{day.getDate()}</div>
+                      <div className="lifeos-cal-events">
+                        {evs.slice(0, 3).map((ev) => (
+                          <div key={ev.id} className="lifeos-cal-ev" style={{ borderLeftColor: ev.color }} title={ev.label}>
+                            {ev.label}
+                          </div>
+                        ))}
+                        {evs.length > 3 && <div className="lifeos-cal-more">+{evs.length - 3}</div>}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* ── SAVINGS ── */}
         {activePage==="savings" && (
           <div className="lifeos-page" style={S.page}>
@@ -1165,6 +1741,7 @@ Tarpor Publish চাপো.`}
           <div className="lifeos-page" style={S.page}>
             <PageHeader title="Monthly Report" sub={monthLabel}>
               <Btn onClick={exportMonthCsv}>Export CSV</Btn>
+              <Btn onClick={exportMonthPdf}>Export PDF</Btn>
               <Btn onClick={generateReport} accent>{reportLoading?"Generating...":"AI Analysis ↗"}</Btn>
             </PageHeader>
             <div className="lifeos-report-stats">
@@ -1229,8 +1806,18 @@ Tarpor Publish চাপো.`}
                 <FormField label="Bio (optional)">
                   <textarea style={{ ...S.input, resize:"none", minHeight:88 }} value={profileBio} onChange={(e) => setProfileBio(e.target.value)} placeholder="Choto intro — nijeke remind korar jonno" />
                 </FormField>
+                <FormField label="WhatsApp number (reminder)">
+                  <input style={S.input} value={whatsappPhone} onChange={(e) => setWhatsappPhone(e.target.value)} placeholder="8801XXXXXXXXX — optional" />
+                </FormField>
                 <Btn onClick={handleSaveSettings} accent>{settingsSaving ? "Saving..." : "Save profile"}</Btn>
               </div>
+            </div>
+            <div style={{ ...S.card, marginTop:16 }}>
+              <div style={S.sectionTitle}>Phone notifications</div>
+              <div style={{ fontSize:12, color:"var(--text2)", lineHeight:1.6, marginBottom:12 }}>
+                Notification phone er top bar e dekhte: browser permission allow koro, tarpor home screen e LifeOS add koro (PWA). Sokol reminder + protiday 8 AM &quot;Ajker Din&quot; list ekhane ashbe.
+              </div>
+              <Btn onClick={enablePushReminders} accent>Phone notification on koro</Btn>
             </div>
             <div style={{ ...S.card, marginTop:16 }}>
               <div style={S.sectionTitle}>Account</div>
@@ -1299,7 +1886,16 @@ Tarpor Publish চাপো.`}
                     {expenseCatSelectOptions.map(c=><option key={c}>{c}</option>)}
                   </select></FormField>
                 </div>
-                <FormField label="Description"><input style={S.input} value={expForm.desc} onChange={e=>setExpForm(p=>({...p,desc:e.target.value}))} placeholder="Ki khoroch korle?"/></FormField>
+                <FormField label="Description">
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <input style={{ ...S.input, flex: 1 }} value={expForm.desc} onChange={e=>setExpForm(p=>({...p,desc:e.target.value}))} placeholder="Ki khoroch korle?"/>
+                    <VoiceMic onResult={(text) => {
+                      const num = text.match(/\d+/);
+                      if (num && !expForm.amount) setExpForm((p) => ({ ...p, amount: num[0], desc: text.replace(num[0], "").trim() || text }));
+                      else setExpForm((p) => ({ ...p, desc: text }));
+                    }} />
+                  </div>
+                </FormField>
                 <div className="lifeos-form-grid-2">
                   <FormField label="Date"><input style={S.input} type="date" value={expForm.date} onChange={e=>setExpForm(p=>({...p,date:e.target.value}))}/></FormField>
                   <FormField label="Method"><select style={S.input} value={expForm.method} onChange={e=>setExpForm(p=>({...p,method:e.target.value}))}>
@@ -1365,7 +1961,14 @@ Tarpor Publish চাপো.`}
                 <label style={{ fontSize:12, color:"var(--text2)", display:"flex", gap:8, alignItems:"center", marginBottom:16 }}>
                   <input type="checkbox" checked={copyHabitsOpt} onChange={(e) => setCopyHabitsOpt(e.target.checked)} /> Habits copy (fresh log)
                 </label>
-                <ModalActions onCancel={() => { setModal(null); setCloseSummary(null); }} onSave={confirmCloseMonth} />
+                <div style={{ fontSize: 11, color: "var(--accent2)", marginBottom: 12, fontWeight: 500 }}>Notun mas er details</div>
+                <FormField label="Notun mas er naam (optional)">
+                  <input style={S.input} value={nextMonthForm.label} onChange={(e) => setNextMonthForm((p) => ({ ...p, label: e.target.value }))} placeholder="Ramadan Budget, June 2026..." />
+                </FormField>
+                <FormField label="Suru tarikh">
+                  <input style={S.input} type="date" value={nextMonthForm.startDate} onChange={(e) => setNextMonthForm((p) => ({ ...p, startDate: e.target.value }))} />
+                </FormField>
+                <ModalActions onCancel={() => { setModal(null); setCloseSummary(null); }} onSave={confirmCloseMonth} saveLabel="Close & notun mas" />
               </>
             )}
 
@@ -1418,19 +2021,17 @@ Tarpor Publish চাপো.`}
             </>}
 
             {modal==="newMonth" && <>
-              <div style={S.modalTitle}>New planner month</div>
+              <div style={S.modalTitle}>Notun mas suru koro</div>
               <p style={{ fontSize: 12, color: "var(--text3)", marginBottom: 16, lineHeight: 1.5 }}>
-                Notun month khulle ager active month auto close hobe. Fresh budget, goals, routine — sob alada.
+                Je din theke suru korbe, oi din thekei count hobe. Naam dao — jemon &quot;Ramadan Budget&quot; ba &quot;June Planning&quot;.
               </p>
               <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-                <div className="lifeos-form-grid-2">
-                  <FormField label="Year">
-                    <input style={S.input} type="number" value={newMonthForm.year} onChange={(e) => setNewMonthForm((p) => ({ ...p, year: e.target.value }))} />
-                  </FormField>
-                  <FormField label="Month (1-12)">
-                    <input style={S.input} type="number" min={1} max={12} value={newMonthForm.month} onChange={(e) => setNewMonthForm((p) => ({ ...p, month: e.target.value }))} />
-                  </FormField>
-                </div>
+                <FormField label="Mas er naam">
+                  <input style={S.input} value={newMonthForm.label} onChange={(e) => setNewMonthForm((p) => ({ ...p, label: e.target.value }))} placeholder="June 2026, Eid Budget..." />
+                </FormField>
+                <FormField label="Suru tarikh">
+                  <input style={S.input} type="date" value={newMonthForm.startDate} onChange={(e) => setNewMonthForm((p) => ({ ...p, startDate: e.target.value }))} />
+                </FormField>
                 <label style={{ fontSize:12, color:"var(--text2)", display:"flex", gap:8, alignItems:"center" }}>
                   <input type="checkbox" checked={copyRoutine} onChange={(e) => setCopyRoutine(e.target.checked)} /> Routine copy
                 </label>
@@ -1438,8 +2039,72 @@ Tarpor Publish চাপো.`}
                   <input type="checkbox" checked={copyHabitsOpt} onChange={(e) => setCopyHabitsOpt(e.target.checked)} /> Habits copy
                 </label>
               </div>
-              <ModalActions onCancel={() => setModal(null)} onSave={handleCreateMonth} />
+              <ModalActions onCancel={() => setModal(null)} onSave={handleCreateMonth} saveLabel="Mas kholo" />
             </>}
+
+            {modal==="todo" && <>
+              <div style={S.modalTitle}>{todoEditId ? "Edit Todo" : "New Todo"}</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                <FormField label="Title">
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <input style={{ ...S.input, flex: 1 }} value={todoForm.title} onChange={(e) => setTodoForm((p) => ({ ...p, title: e.target.value }))} placeholder="Ki korte hobe?" />
+                    <VoiceMic onResult={(text) => setTodoForm((p) => ({ ...p, title: text }))} />
+                  </div>
+                </FormField>
+                <FormField label="Note (optional)">
+                  <textarea style={{ ...S.input, resize: "none", minHeight: 72 }} value={todoForm.note} onChange={(e) => setTodoForm((p) => ({ ...p, note: e.target.value }))} placeholder="Details..." />
+                </FormField>
+                <div className="lifeos-form-grid-2">
+                  <FormField label="Priority">
+                    <select style={S.input} value={todoForm.priority} onChange={(e) => setTodoForm((p) => ({ ...p, priority: e.target.value as Todo["priority"] }))}>
+                      <option value="low">Low</option>
+                      <option value="medium">Medium</option>
+                      <option value="high">High</option>
+                    </select>
+                  </FormField>
+                  <FormField label="Deadline">
+                    <input style={S.input} type="date" value={todoForm.dueDate} onChange={(e) => setTodoForm((p) => ({ ...p, dueDate: e.target.value }))} />
+                  </FormField>
+                </div>
+                <label style={{ fontSize: 12, color: "var(--text2)", display: "flex", gap: 8, alignItems: "center" }}>
+                  <input type="checkbox" checked={todoForm.urgent} onChange={(e) => setTodoForm((p) => ({ ...p, urgent: e.target.checked }))} />
+                  Urgent — list er shathe shathe upore show hobe
+                </label>
+              </div>
+              <ModalActions onCancel={() => setModal(null)} onSave={handleSaveTodo} />
+            </>}
+
+            {modal==="lending" && <>
+              <div style={S.modalTitle}>{lendingEditId ? "Edit Dhar/Udhár" : "New Dhar/Udhár"}</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                <FormField label="Type">
+                  <select style={S.input} value={lendingForm.direction} onChange={(e) => setLendingForm((p) => ({ ...p, direction: e.target.value as Lending["direction"] }))}>
+                    <option value="borrowed">Ami niyechi (processing)</option>
+                    <option value="lent">Ami diyechi (pending)</option>
+                  </select>
+                </FormField>
+                <FormField label="Naam">
+                  <input style={S.input} value={lendingForm.person} onChange={(e) => setLendingForm((p) => ({ ...p, person: e.target.value }))} placeholder="Kar kache / ke?" />
+                </FormField>
+                <div className="lifeos-form-grid-2">
+                  <FormField label="Amount">
+                    <input style={S.input} type="number" value={lendingForm.amount} onChange={(e) => setLendingForm((p) => ({ ...p, amount: e.target.value }))} placeholder="0" />
+                  </FormField>
+                  <FormField label="Deadline">
+                    <input style={S.input} type="date" value={lendingForm.dueDate} onChange={(e) => setLendingForm((p) => ({ ...p, dueDate: e.target.value }))} />
+                  </FormField>
+                </div>
+                <label style={{ fontSize: 12, color: "var(--text2)", display: "flex", gap: 8, alignItems: "center" }}>
+                  <input type="checkbox" checked={lendingForm.urgent} onChange={(e) => setLendingForm((p) => ({ ...p, urgent: e.target.checked }))} />
+                  Urgent — dhar list e age show + notification
+                </label>
+                <FormField label="Note">
+                  <input style={S.input} value={lendingForm.note} onChange={(e) => setLendingForm((p) => ({ ...p, note: e.target.value }))} placeholder="Keno, kokhon..." />
+                </FormField>
+              </div>
+              <ModalActions onCancel={() => setModal(null)} onSave={handleSaveLending} />
+            </>}
+
 
             {modal==="habit" && <>
               <div style={S.modalTitle}>New Habit</div>
@@ -1541,10 +2206,10 @@ function FormField({ label, children }: { label:string; children: React.ReactNod
   </div>;
 }
 
-function ModalActions({ onCancel, onSave }: { onCancel:()=>void; onSave:()=>void }) {
+function ModalActions({ onCancel, onSave, saveLabel = "Save" }: { onCancel:()=>void; onSave:()=>void; saveLabel?: string }) {
   return <div style={{display:"flex",gap:8,justifyContent:"flex-end",marginTop:20}}>
     <button style={S.btnStyle} onClick={onCancel}>Cancel</button>
-    <button style={{...S.btnStyle,...S.btnAccent}} onClick={onSave}>Save</button>
+    <button style={{...S.btnStyle,...S.btnAccent}} onClick={onSave}>{saveLabel}</button>
   </div>;
 }
 
