@@ -69,6 +69,7 @@ export default function Dashboard() {
   const [loadError, setLoadError] = useState<"permissions" | "other" | null>(null);
   const [navOpen, setNavOpen] = useState(false);
   const [theme, setTheme] = useState<"dark" | "light">("dark");
+  const [toast, setToast] = useState<string | null>(null);
   const [months, setMonths] = useState<PlannerMonth[]>([]);
   const [activeMonth, setActiveMonth] = useState<PlannerMonth | null>(null);
   const [monthMenuOpen, setMonthMenuOpen] = useState(false);
@@ -398,11 +399,13 @@ export default function Dashboard() {
     const mid = activeMonth?.id;
     if (!user || !mid || !canEdit || !expForm.amount) return;
     const newExp = { amount: parseFloat(expForm.amount), cat: expForm.cat, desc: expForm.desc || expForm.cat, date: expForm.date, method: expForm.method };
+    const wasEdit = !!expenseEditId;
     if (expenseEditId) {
       await DB.updateExpense(user.uid, mid, expenseEditId, newExp);
     } else {
       await DB.addExpense(user.uid, mid, newExp);
     }
+    showToast(wasEdit ? "✓ Kharch update hoyeche" : "✓ Kharch add hoyeche");
     setExpForm({ amount:"", cat:"Food", desc:"", date:todayStr(), method:"Cash" });
     setExpenseEditId(null);
     setModal(null);
@@ -421,6 +424,7 @@ export default function Dashboard() {
     if (!user || !mid || !canEdit) return;
     await DB.addExpense(user.uid, mid, { amount, cat, desc, date: todayStr(), method: "Cash" });
     loadData();
+    showToast(`✓ ${desc} — ${fmt(amount)} add hoyeche`);
   }
 
   useEffect(() => {
@@ -435,6 +439,11 @@ export default function Dashboard() {
     setTheme(next);
     document.documentElement.setAttribute("data-theme", next);
     try { localStorage.setItem("lifeos-theme", next); } catch {}
+  }
+
+  function showToast(msg: string) {
+    setToast(msg);
+    setTimeout(() => setToast((cur) => (cur === msg ? null : cur)), 2200);
   }
 
   function openEditExpenseModal(e: Expense) {
@@ -702,7 +711,7 @@ export default function Dashboard() {
     const mid = activeMonth?.id;
     if (!user || !mid || !canEdit) return;
     await DB.saveBudget(user.uid, mid, budget);
-    alert("Budget saved! ✅");
+    showToast("✓ Budget saved");
   }
 
   async function handleAddGoal() {
@@ -934,6 +943,11 @@ Tarpor Publish চাপো.`}
   // ─── RENDER ─────────────────────────────────────────
   return (
     <div className={`lifeos-app${navOpen ? " nav-open" : ""}`} style={S.app}>
+      {toast && (
+        <div style={{position:"fixed",bottom:24,left:"50%",transform:"translateX(-50%)",zIndex:9999,background:"var(--bg2)",border:"1px solid var(--border2)",color:"var(--text)",padding:"11px 18px",borderRadius:12,fontSize:13,boxShadow:"0 8px 30px rgba(0,0,0,0.35)",display:"flex",alignItems:"center",gap:8,maxWidth:"90vw",animation:"lifeosToastIn 0.2s ease"}}>
+          {toast}
+        </div>
+      )}
       <MorningBriefScheduler brief={dailyBrief} ready={!!user && !dataLoading} />
       <div className="lifeos-sidebar-backdrop" onClick={() => setNavOpen(false)} aria-hidden />
 
