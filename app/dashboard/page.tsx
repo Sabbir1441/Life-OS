@@ -1250,6 +1250,7 @@ Tarpor Publish চাপো.`}
         {activePage==="budget" && (
           <div className="lifeos-page" style={S.page}>
             <PageHeader title="Budget Planner" sub="income onujaie koto kothay dewa uchit">
+              <Btn onClick={()=>{setActivePage("ai");setTimeout(()=>sendAI("Amar income ar এই mash er khoroch dekhe ekta realistic budget suggest koro — kon category te koto taka rakha uchit (taka soho), ar kothay komano jay."),100);}}>AI Suggest ↗</Btn>
               <Btn onClick={handleSaveBudget} accent>Save Budget</Btn>
             </PageHeader>
             <div style={S.metricsGrid}>
@@ -1259,6 +1260,28 @@ Tarpor Publish চাপো.`}
                 {label:"Unallocated",value:fmt(Math.max(0,totalIncome-Object.values(budget).reduce((s,v)=>s+v,0)))},
               ].map(m=><div key={m.label} style={S.metricCard}><div style={S.metricLabel}>{m.label}</div><div className="lifeos-metric-value" style={S.metricValue}>{m.value}</div></div>)}
             </div>
+            {(()=>{
+              const totalBud=Object.values(budget).reduce((s,v)=>s+v,0)||0;
+              const spent=totalSpent;
+              const pct=totalBud?Math.min(100,Math.round(spent/totalBud*100)):0;
+              const over=spent>totalBud && totalBud>0;
+              const r=42, circ=2*Math.PI*r;
+              return (
+                <div style={{...S.card,display:"flex",alignItems:"center",gap:20,marginBottom:16,flexWrap:"wrap"}}>
+                  <svg width="110" height="110" viewBox="0 0 110 110" style={{flexShrink:0}}>
+                    <circle cx="55" cy="55" r={r} fill="none" stroke="var(--bg4)" strokeWidth="12"/>
+                    <circle cx="55" cy="55" r={r} fill="none" stroke={over?"var(--red)":"var(--teal)"} strokeWidth="12" strokeLinecap="round" strokeDasharray={circ} strokeDashoffset={circ*(1-pct/100)} transform="rotate(-90 55 55)"/>
+                    <text x="55" y="52" textAnchor="middle" fontSize="20" fontWeight="600" fill="var(--text)" fontFamily="monospace">{pct}%</text>
+                    <text x="55" y="70" textAnchor="middle" fontSize="9" fill="var(--text3)" fontFamily="monospace">used</text>
+                  </svg>
+                  <div style={{minWidth:140}}>
+                    <div style={{fontSize:13,color:"var(--text2)",marginBottom:5}}>Total budget: <b style={{fontFamily:"monospace"}}>{fmt(totalBud)}</b></div>
+                    <div style={{fontSize:13,color:"var(--text2)",marginBottom:5}}>Spent: <b style={{fontFamily:"monospace",color:over?"var(--red)":"var(--text)"}}>{fmt(spent)}</b></div>
+                    <div style={{fontSize:12,color:over?"var(--red)":"var(--green)",fontFamily:"monospace"}}>{over?`Over by ${fmt(spent-totalBud)}!`:`Baki ${fmt(Math.max(0,totalBud-spent))}`}</div>
+                  </div>
+                </div>
+              );
+            })()}
             <div className="lifeos-grid2" style={S.grid2}>
               <div style={S.card}>
                 <div style={S.sectionTitle}>Set Category Budgets</div>
