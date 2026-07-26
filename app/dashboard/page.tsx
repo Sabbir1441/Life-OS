@@ -71,6 +71,8 @@ export default function Dashboard() {
   const [navOpen, setNavOpen] = useState(false);
   const [theme, setTheme] = useState<"dark" | "light">("dark");
   const [toast, setToast] = useState<string | null>(null);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [globalQuery, setGlobalQuery] = useState("");
   const [months, setMonths] = useState<PlannerMonth[]>([]);
   const [activeMonth, setActiveMonth] = useState<PlannerMonth | null>(null);
   const [monthMenuOpen, setMonthMenuOpen] = useState(false);
@@ -446,6 +448,21 @@ export default function Dashboard() {
     setToast(msg);
     setTimeout(() => setToast((cur) => (cur === msg ? null : cur)), 2200);
   }
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      const t = e.target as HTMLElement;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable)) return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (modal) return;
+      if (e.key === "n" && canEdit) { e.preventDefault(); openNewExpenseModal(); }
+      else if (e.key === "t") { e.preventDefault(); openNewTodoModal(); }
+      else if (e.key === "/") { e.preventDefault(); setSearchOpen(true); }
+      else if (e.key === "Escape") { setSearchOpen(false); }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [canEdit, modal]);
 
   function openEditExpenseModal(e: Expense) {
     if (!canEdit) return;
@@ -961,6 +978,31 @@ Tarpor Publish চাপো.`}
           {toast}
         </div>
       )}
+      {searchOpen && (()=>{
+        const q=globalQuery.trim().toLowerCase();
+        const exp=q?expenses.filter(e=>[e.desc,e.cat].some(v=>String(v||"").toLowerCase().includes(q))).slice(0,6):[];
+        const tds=q?todos.filter(t=>t.title.toLowerCase().includes(q)).slice(0,6):[];
+        const lnd=q?lending.filter(l=>l.person.toLowerCase().includes(q)).slice(0,6):[];
+        const go=(page:string)=>{ setActivePage(page); setSearchOpen(false); setGlobalQuery(""); };
+        const rowCls="lifeos-nav-item-touch";
+        return (
+          <div onClick={()=>setSearchOpen(false)} style={{position:"fixed",inset:0,zIndex:9998,background:"rgba(0,0,0,0.5)",display:"flex",justifyContent:"center",alignItems:"flex-start",paddingTop:"12vh"}}>
+            <div onClick={e=>e.stopPropagation()} style={{width:"90%",maxWidth:520,background:"var(--bg2)",border:"1px solid var(--border2)",borderRadius:16,overflow:"hidden",boxShadow:"0 20px 60px rgba(0,0,0,0.4)"}}>
+              <input autoFocus value={globalQuery} onChange={e=>setGlobalQuery(e.target.value)} placeholder="🔍 Expense, todo, dhar khojo..." style={{width:"100%",padding:"16px 18px",fontSize:15,background:"transparent",border:"none",borderBottom:"1px solid var(--border)",color:"var(--text)",outline:"none"}}/>
+              <div style={{maxHeight:"50vh",overflowY:"auto",padding:8}}>
+                {!q && <div style={{padding:20,textAlign:"center",color:"var(--text3)",fontSize:12}}>Type kore khojo</div>}
+                {q && !exp.length && !tds.length && !lnd.length && <div style={{padding:20,textAlign:"center",color:"var(--text3)",fontSize:12}}>Kichu meleni</div>}
+                {exp.length>0 && <div style={{fontSize:9,color:"var(--text3)",fontFamily:"monospace",padding:"6px 10px",textTransform:"uppercase"}}>Expenses</div>}
+                {exp.map(e=><div key={e.id} onClick={()=>go("expenses")} className={rowCls} style={{display:"flex",justifyContent:"space-between",padding:"9px 12px",borderRadius:8,cursor:"pointer",fontSize:13}}><span>{catIcon(e.cat)} {e.desc}</span><span style={{fontFamily:"monospace",color:"var(--text3)"}}>{fmt(e.amount)}</span></div>)}
+                {tds.length>0 && <div style={{fontSize:9,color:"var(--text3)",fontFamily:"monospace",padding:"6px 10px",textTransform:"uppercase"}}>Todos</div>}
+                {tds.map(t=><div key={t.id} onClick={()=>go("todos")} className={rowCls} style={{padding:"9px 12px",borderRadius:8,cursor:"pointer",fontSize:13}}>☑ {t.title}</div>)}
+                {lnd.length>0 && <div style={{fontSize:9,color:"var(--text3)",fontFamily:"monospace",padding:"6px 10px",textTransform:"uppercase"}}>Dhar</div>}
+                {lnd.map(l=><div key={l.id} onClick={()=>go("lending")} className={rowCls} style={{display:"flex",justifyContent:"space-between",padding:"9px 12px",borderRadius:8,cursor:"pointer",fontSize:13}}><span>⇄ {l.person}</span><span style={{fontFamily:"monospace",color:"var(--text3)"}}>{fmt(l.amount)}</span></div>)}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
       <MorningBriefScheduler brief={dailyBrief} ready={!!user && !dataLoading} />
       <div className="lifeos-sidebar-backdrop" onClick={() => setNavOpen(false)} aria-hidden />
 
@@ -1021,7 +1063,10 @@ Tarpor Publish চাপো.`}
             <div className="lifeos-user-email" style={S.userEmail}>{user?.email}</div>
           </div>
         </div>
-        <nav style={{padding:"10px 0",flex:1}}>
+        <div onClick={()=>setSearchOpen(true)} className="lifeos-nav-item-touch" style={{margin:"4px 14px 6px",padding:"8px 12px",borderRadius:8,border:"1px solid var(--border)",background:"var(--bg3)",color:"var(--text3)",fontSize:12,cursor:"pointer",display:"flex",alignItems:"center",gap:8}}>
+          🔍 Search<span style={{marginLeft:"auto",fontFamily:"monospace",fontSize:10,opacity:0.6,border:"1px solid var(--border)",borderRadius:4,padding:"0 5px"}}>/</span>
+        </div>
+        <nav style={{padding:"4px 0 10px",flex:1}}>
           {navItems.map((item) => (
             <div key={item.id}>
               {item.section && <div style={S.navSection}>{item.section}</div>}
@@ -1157,6 +1202,12 @@ Tarpor Publish চাপো.`}
                 <div style={S.notifDot}/> Ei mashe income-er {Math.round(totalSpent/totalIncome*100)}% khoroch hoyeche — sombre thako!
               </div>
             )}
+
+            {(()=>{ const over=Object.entries(budget).filter(([cat,bud])=>{const sp=monthExp.filter(e=>e.cat===cat).reduce((s,e)=>s+e.amount,0); return bud>0 && sp>bud;}).map(([cat])=>cat); return over.length>0 ? (
+              <div style={{ ...S.notif, background:"rgba(248,113,113,0.1)", borderColor:"rgba(248,113,113,0.3)", color:"var(--red)" }}>
+                <div style={{ ...S.notifDot, background:"var(--red)" }} /> Budget over: {over.join(", ")} — dhire kharoch koro!
+              </div>
+            ) : null; })()}
 
             <div style={S.metricsGrid}>
               {[
