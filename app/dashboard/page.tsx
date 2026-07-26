@@ -20,7 +20,7 @@ import { MorningBriefScheduler } from "@/components/morning-brief-scheduler";
 // ─── TYPES ───────────────────────────────────────────
 type Expense = { id: string; amount: number; cat: string; desc: string; date: string; method: string };
 type Income = { id: string; name: string; amount: number; type: string };
-type Goal = { id: string; name: string; emoji: string; target: number; current: number };
+type Goal = { id: string; name: string; emoji: string; target: number; current: number; deadline?: string };
 type Task = { id: string; name: string; time: string; dur: number; cat: string; done: boolean };
 type Habit = { id: string; name: string; freq: number; color: string };
 type MoodLog = { id: string; mood: number; label: string; note: string; energy: number; date: string };
@@ -120,7 +120,7 @@ export default function Dashboard() {
   const [copyHabitsOpt, setCopyHabitsOpt] = useState(true);
   const [currencyChoice, setCurrencyChoice] = useState("BDT");
   const [subForm, setSubForm] = useState({ name:"", amount:"", cycle:"monthly" as "monthly"|"yearly", note:"" });
-  const [goalForm, setGoalForm] = useState({ name:"", emoji:"🎯", target:"", current:"" });
+  const [goalForm, setGoalForm] = useState({ name:"", emoji:"🎯", target:"", current:"", deadline:"" });
   const [taskForm, setTaskForm] = useState({ name:"", time:"09:00", dur:"60", cat:"purple" });
   const [habitForm, setHabitForm] = useState({ name:"", freq:"7", color:"var(--accent)" });
   const [selectedMood, setSelectedMood] = useState<{score:number;label:string}|null>(null);
@@ -717,10 +717,11 @@ export default function Dashboard() {
   async function handleAddGoal() {
     const mid = activeMonth?.id;
     if (!user || !mid || !canEdit || !goalForm.name || !goalForm.target) return;
-    await DB.addGoal(user.uid, mid, { name: goalForm.name, emoji: goalForm.emoji || "🎯", target: parseFloat(goalForm.target), current: parseFloat(goalForm.current)||0 });
-    setGoalForm({ name:"", emoji:"🎯", target:"", current:"" });
+    await DB.addGoal(user.uid, mid, { name: goalForm.name, emoji: goalForm.emoji || "🎯", target: parseFloat(goalForm.target), current: parseFloat(goalForm.current)||0, deadline: goalForm.deadline || null });
+    setGoalForm({ name:"", emoji:"🎯", target:"", current:"", deadline:"" });
     setModal(null);
     loadData();
+    showToast("✓ Goal add hoyeche");
   }
 
   async function handleAddToGoal(g: Goal) {
@@ -1718,9 +1719,15 @@ Tarpor Publish চাপো.`}
                   <div style={{height:6,background:"var(--bg4)",borderRadius:3,overflow:"hidden",marginBottom:8}}>
                     <div style={{height:"100%",width:pct+"%",background:done?"var(--green)":"var(--accent)",borderRadius:3,transition:"width 0.6s"}}/>
                   </div>
+                  {!done && g.deadline && (()=>{
+                    const dd=new Date(g.deadline+"T12:00:00"); const now=new Date();
+                    const mLeft=Math.max(0,(dd.getFullYear()-now.getFullYear())*12+(dd.getMonth()-now.getMonth()));
+                    const perMonth=mLeft>0?Math.ceil((g.target-g.current)/mLeft):(g.target-g.current);
+                    return <div style={{fontSize:10,color:"var(--teal)",fontFamily:"monospace",marginBottom:8}}>🎯 {g.deadline} · {mLeft>0?`mashe ~${fmt(perMonth)} rakhle pouchabe`:"ei mash er target!"}</div>;
+                  })()}
                   <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
                     <span style={{fontSize:11,color:"var(--text3)",fontFamily:"monospace"}}>{pct}% complete</span>
-                    {done ? <span style={{fontSize:11,color:"var(--green)",fontFamily:"monospace"}}>ACHIEVED!</span>
+                    {done ? <span style={{fontSize:11,color:"var(--green)",fontFamily:"monospace"}}>🎉 ACHIEVED!</span>
                       : <button style={{...S.btnStyle,...S.btnAccent,padding:"5px 12px",fontSize:11}} onClick={()=>handleAddToGoal(g)}>+ Add</button>}
                   </div>
                 </div>;
@@ -2144,6 +2151,7 @@ Tarpor Publish চাপো.`}
                   <FormField label="Target (৳)"><input style={S.input} type="number" value={goalForm.target} onChange={e=>setGoalForm(p=>({...p,target:e.target.value}))} placeholder="0"/></FormField>
                   <FormField label="Saved So Far (৳)"><input style={S.input} type="number" value={goalForm.current} onChange={e=>setGoalForm(p=>({...p,current:e.target.value}))} placeholder="0"/></FormField>
                 </div>
+                <FormField label="Target date (optional)"><input style={S.input} type="date" value={goalForm.deadline} onChange={e=>setGoalForm(p=>({...p,deadline:e.target.value}))}/></FormField>
               </div>
               <ModalActions onCancel={()=>setModal(null)} onSave={handleAddGoal}/>
             </>}
