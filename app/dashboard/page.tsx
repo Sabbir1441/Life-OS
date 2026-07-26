@@ -26,7 +26,7 @@ type Habit = { id: string; name: string; freq: number; color: string };
 type MoodLog = { id: string; mood: number; label: string; note: string; energy: number; date: string };
 type Subscription = { id: string; name: string; amount: number; cycle: "monthly" | "yearly"; note?: string; nextBill?: string; cat?: string };
 type Debt = { id: string; name: string; total: number; paid: number; emi: number; dueDay?: number; interest?: number };
-type Todo = { id: string; title: string; note?: string; priority: "low" | "medium" | "high"; dueDate?: string; done: boolean; urgent?: boolean; subtasks?: { text: string; done: boolean }[] };
+type Todo = { id: string; title: string; note?: string; priority: "low" | "medium" | "high"; dueDate?: string; done: boolean; urgent?: boolean; subtasks?: { text: string; done: boolean }[]; repeat?: "none" | "daily" | "weekly"; order?: number };
 type Lending = {
   id: string;
   person: string;
@@ -114,7 +114,7 @@ export default function Dashboard() {
   const [debts, setDebts] = useState<Debt[]>([]);
   const [debtForm, setDebtForm] = useState({ name:"", total:"", paid:"", emi:"", dueDay:"", interest:"" });
   const [debtEditId, setDebtEditId] = useState<string | null>(null);
-  const [todoForm, setTodoForm] = useState({ title: "", note: "", priority: "medium" as Todo["priority"], dueDate: "", urgent: false, subtasks: "" });
+  const [todoForm, setTodoForm] = useState({ title: "", note: "", priority: "medium" as Todo["priority"], dueDate: "", urgent: false, subtasks: "", repeat: "none" as Todo["repeat"] });
   const [todoEditId, setTodoEditId] = useState<string | null>(null);
   const [lendingForm, setLendingForm] = useState({ person: "", amount: "", direction: "borrowed" as Lending["direction"], dueDate: "", note: "", urgent: false });
   const [lendingEditId, setLendingEditId] = useState<string | null>(null);
@@ -588,13 +588,13 @@ export default function Dashboard() {
 
   function openNewTodoModal() {
     setTodoEditId(null);
-    setTodoForm({ title: "", note: "", priority: "medium", dueDate: "", urgent: false, subtasks: "" });
+    setTodoForm({ title: "", note: "", priority: "medium", dueDate: "", urgent: false, subtasks: "", repeat: "none" as Todo["repeat"] });
     setModal("todo");
   }
 
   function openEditTodoModal(t: Todo) {
     setTodoEditId(t.id);
-    setTodoForm({ title: t.title, note: t.note || "", priority: t.priority, dueDate: t.dueDate || "", urgent: Boolean(t.urgent), subtasks: (t.subtasks || []).map((s) => s.text).join("\n") });
+    setTodoForm({ title: t.title, note: t.note || "", priority: t.priority, dueDate: t.dueDate || "", urgent: Boolean(t.urgent), subtasks: (t.subtasks || []).map((s) => s.text).join("\n"), repeat: t.repeat || "none" });
     setModal("todo");
   }
 
@@ -612,13 +612,15 @@ export default function Dashboard() {
       dueDate: todoForm.dueDate || undefined,
       urgent: todoForm.urgent,
       subtasks,
+      repeat: todoForm.repeat || "none",
     };
     if (todoEditId) {
       await DB.updateTodo(user.uid, todoEditId, payload);
     } else {
-      await DB.addTodo(user.uid, payload);
+      const maxOrder = todos.reduce((m, t) => Math.max(m, t.order ?? 0), 0);
+      await DB.addTodo(user.uid, { ...payload, order: maxOrder + 1 });
     }
-    setTodoForm({ title: "", note: "", priority: "medium", dueDate: "", urgent: false, subtasks: "" });
+    setTodoForm({ title: "", note: "", priority: "medium", dueDate: "", urgent: false, subtasks: "", repeat: "none" as Todo["repeat"] });
     setTodoEditId(null);
     setModal(null);
     loadData();
@@ -628,8 +630,35 @@ export default function Dashboard() {
     if (!user) return;
     const t = todos.find((x) => x.id === id);
     if (!t) return;
-    await DB.updateTodo(user.uid, id, { done: !t.done });
-    setTodos((prev) => prev.map((x) => (x.id === id ? { ...x, done: !x.done } : x)));
+    const willBeDone = !t.done;
+    await DB.updateTodo(user.uid, id, { done: willBeDone });
+    setTodos((prev) => prev.map((x) => (x.id === id ? { ...x, done: willBeDone } : x)));
+    if (willBeDone && t.repeat && t.repeat !== "none") {
+      const base = t.dueDate ? new Date(t.dueDate + "T12:00:00") : new Date();
+      base.setDate(base.getDate() + (t.repeat === "weekly" ? 7 : 1));
+      const nextDue = base.toISOString().slice(0, 10);
+      const maxOrder = todos.reduce((m, x) => Math.max(m, x.order ?? 0), 0);
+      await DB.addTodo(user.uid, {
+        title: t.title, note: t.note ?? null, priority: t.priority, dueDate: nextDue,
+        urgent: Boolean(t.urgent), repeat: t.repeat, order: maxOrder + 1,
+        subtasks: (t.subtasks || []).map((s) => ({ text: s.text, done: false })),
+      });
+      loadData();
+    }
+  }
+
+  async function handleMoveTodo(id: string, dir: -1 | 1) {
+    if (!user) return;
+    const active = todos.filter((x) => !x.done).sort((a, b) => (a.order ?? 1e9) - (b.order ?? 1e9));
+    const idx = active.findIndex((x) => x.id === id);
+    const swapWith = active[idx + dir];
+    if (idx < 0 || !swapWith) return;
+    const cur = active[idx];
+    const oCur = cur.order ?? idx;
+    const oSwap = swapWith.order ?? idx + dir;
+    setTodos((prev) => prev.map((x) => x.id === cur.id ? { ...x, order: oSwap } : x.id === swapWith.id ? { ...x, order: oCur } : x));
+    await DB.updateTodo(user.uid, cur.id, { order: oSwap });
+    await DB.updateTodo(user.uid, swapWith.id, { order: oCur });
   }
 
   async function handleToggleSubtask(todoId: string, index: number) {
@@ -1700,7 +1729,12 @@ Tarpor Publish চাপো.`}
                 });
                 if (!filtered.length) return <Empty icon="☑" text="Kono todo nei — + New Todo click koro" />;
                 const showGroups = todoFilter === "active";
-                const sorted = sortUrgentFirst(filtered);
+                const sorted = [...filtered].sort((a, b) => {
+                  if (Boolean(b.urgent) !== Boolean(a.urgent)) return Number(b.urgent) - Number(a.urgent);
+                  const oa = a.order ?? 1e9, ob = b.order ?? 1e9;
+                  if (oa !== ob) return oa - ob;
+                  return (a.dueDate || "9999-12-31").localeCompare(b.dueDate || "9999-12-31");
+                });
                 const { urgent, normal } = splitUrgentNormal(sorted.filter((t) => !t.done));
                 const renderRow = (t: Todo) => (
                   <div key={t.id} className="lifeos-todo-item" style={{ display: "flex", alignItems: "flex-start", gap: 12, padding: "12px 0", borderBottom: "1px solid var(--border)", opacity: t.done ? 0.45 : 1 }}>
@@ -1723,10 +1757,15 @@ Tarpor Publish চাপো.`}
                       )}
                       <div style={{ display: "flex", gap: 8, marginTop: 6, flexWrap: "wrap" }}>
                         {t.urgent && <span className="lifeos-urgent-pill">URGENT</span>}
+                        {t.repeat && t.repeat !== "none" && <span style={{ fontSize: 10, color: "var(--teal)", fontFamily: "monospace" }}>🔁 {t.repeat}</span>}
                         {t.dueDate && <span style={{ fontSize: 10, color: deadlineLabel(t.dueDate, today) === "Overdue" ? "var(--red)" : "var(--text3)", fontFamily: "monospace" }}>{deadlineLabel(t.dueDate, today)}</span>}
                       </div>
                     </div>
-                    <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+                    <div style={{ display: "flex", gap: 6, flexShrink: 0, alignItems: "flex-start" }}>
+                      {!t.done && showGroups && <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                        <button type="button" title="Upore" onClick={() => handleMoveTodo(t.id, -1)} style={{ fontSize: 9, lineHeight: 1, padding: "3px 5px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg3)", color: "var(--text3)", cursor: "pointer" }}>▲</button>
+                        <button type="button" title="Niche" onClick={() => handleMoveTodo(t.id, 1)} style={{ fontSize: 9, lineHeight: 1, padding: "3px 5px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg3)", color: "var(--text3)", cursor: "pointer" }}>▼</button>
+                      </div>}
                       {!t.done && <button type="button" onClick={() => waRemind({ title: t.title, subtitle: t.dueDate ? deadlineLabel(t.dueDate, today) || undefined : undefined })} style={{ fontSize: 10, padding: "4px 8px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg3)", color: "var(--green)", cursor: "pointer" }}>WA</button>}
                       <button type="button" onClick={() => openEditTodoModal(t)} style={{ fontSize: 12, color: "var(--accent)", background: "none", border: "none", cursor: "pointer" }}>✎</button>
                       <span onClick={() => handleDeleteTodo(t.id)} style={{ fontSize: 18, color: "var(--red)", cursor: "pointer", opacity: 0.4 }}>×</span>
@@ -2366,6 +2405,13 @@ Tarpor Publish চাপো.`}
                     <input style={S.input} type="date" value={todoForm.dueDate} onChange={(e) => setTodoForm((p) => ({ ...p, dueDate: e.target.value }))} />
                   </FormField>
                 </div>
+                <FormField label="Repeat">
+                  <select style={S.input} value={todoForm.repeat} onChange={(e) => setTodoForm((p) => ({ ...p, repeat: e.target.value as Todo["repeat"] }))}>
+                    <option value="none">No repeat</option>
+                    <option value="daily">Daily — done korle porer din auto</option>
+                    <option value="weekly">Weekly — done korle porer soptahe auto</option>
+                  </select>
+                </FormField>
                 <label style={{ fontSize: 12, color: "var(--text2)", display: "flex", gap: 8, alignItems: "center" }}>
                   <input type="checkbox" checked={todoForm.urgent} onChange={(e) => setTodoForm((p) => ({ ...p, urgent: e.target.checked }))} />
                   Urgent — list er shathe shathe upore show hobe
