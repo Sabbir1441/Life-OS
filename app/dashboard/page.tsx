@@ -25,7 +25,7 @@ type Task = { id: string; name: string; time: string; dur: number; cat: string; 
 type Habit = { id: string; name: string; freq: number; color: string };
 type MoodLog = { id: string; mood: number; label: string; note: string; energy: number; date: string };
 type Subscription = { id: string; name: string; amount: number; cycle: "monthly" | "yearly"; note?: string };
-type Debt = { id: string; name: string; total: number; paid: number; emi: number; dueDay?: number };
+type Debt = { id: string; name: string; total: number; paid: number; emi: number; dueDay?: number; interest?: number };
 type Todo = { id: string; title: string; note?: string; priority: "low" | "medium" | "high"; dueDate?: string; done: boolean; urgent?: boolean };
 type Lending = {
   id: string;
@@ -109,7 +109,7 @@ export default function Dashboard() {
   const [incForm, setIncForm] = useState({ name:"", amount:"", type:"fixed" });
   const [incomeEditId, setIncomeEditId] = useState<string | null>(null);
   const [debts, setDebts] = useState<Debt[]>([]);
-  const [debtForm, setDebtForm] = useState({ name:"", total:"", paid:"", emi:"", dueDay:"" });
+  const [debtForm, setDebtForm] = useState({ name:"", total:"", paid:"", emi:"", dueDay:"", interest:"" });
   const [debtEditId, setDebtEditId] = useState<string | null>(null);
   const [todoForm, setTodoForm] = useState({ title: "", note: "", priority: "medium" as Todo["priority"], dueDate: "", urgent: false });
   const [todoEditId, setTodoEditId] = useState<string | null>(null);
@@ -503,13 +503,14 @@ export default function Dashboard() {
       paid: parseFloat(debtForm.paid) || 0,
       emi: parseFloat(debtForm.emi) || 0,
       dueDay: debtForm.dueDay ? parseInt(debtForm.dueDay, 10) : undefined,
+      interest: parseFloat(debtForm.interest) || 0,
     };
     if (debtEditId) {
       await DB.updateDebt(user.uid, debtEditId, payload);
     } else {
       await DB.addDebt(user.uid, payload);
     }
-    setDebtForm({ name:"", total:"", paid:"", emi:"", dueDay:"" });
+    setDebtForm({ name:"", total:"", paid:"", emi:"", dueDay:"", interest:"" });
     setDebtEditId(null);
     setModal(null);
     loadData();
@@ -1431,7 +1432,7 @@ Tarpor Publish চাপো.`}
         {activePage==="debts" && (
           <div className="lifeos-page" style={S.page}>
             <PageHeader title="Debts / EMI" sub="loan, credit card, dhar — global track">
-              <Btn onClick={()=>{ setDebtEditId(null); setDebtForm({ name:"", total:"", paid:"", emi:"", dueDay:"" }); setModal("debt"); }} accent>+ Add Debt</Btn>
+              <Btn onClick={()=>{ setDebtEditId(null); setDebtForm({ name:"", total:"", paid:"", emi:"", dueDay:"", interest:"" }); setModal("debt"); }} accent>+ Add Debt</Btn>
             </PageHeader>
             <div style={S.metricsGrid}>
               {[
@@ -1450,6 +1451,7 @@ Tarpor Publish চাপো.`}
                 const pct = d.total ? Math.min(100, Math.round((d.paid / d.total) * 100)) : 0;
                 const remain = Math.max(0, d.total - d.paid);
                 const monthsLeft = d.emi > 0 && remain > 0 ? Math.ceil(remain / d.emi) : null;
+                const yearlyInterest = d.interest && remain > 0 ? Math.round(remain * d.interest / 100) : 0;
                 return (
                   <div key={d.id} style={S.card}>
                     <div style={{ fontSize:14, fontWeight:500, marginBottom:8 }}>{d.name}</div>
@@ -1466,8 +1468,9 @@ Tarpor Publish চাপো.`}
                         : monthsLeft && <span style={{ fontSize:10, color:"var(--teal)", fontFamily:"monospace" }}>≈ {monthsLeft} mash baki</span>}
                     </div>
                     {d.dueDay && <div style={{ fontSize:10, color:"var(--amber)", fontFamily:"monospace", marginTop:4 }}>Due day: {d.dueDay}</div>}
+                    {d.interest ? <div style={{ fontSize:10, color:"var(--amber)", fontFamily:"monospace", marginTop:4 }}>{d.interest}%/yr · sud ~{fmt(yearlyInterest)}/yr</div> : null}
                     <div style={{ display:"flex", justifyContent:"flex-end", gap:8, marginTop:10 }}>
-                      <button type="button" onClick={()=>{ setDebtEditId(d.id); setDebtForm({ name:d.name, total:String(d.total), paid:String(d.paid), emi:String(d.emi), dueDay:d.dueDay?String(d.dueDay):"" }); setModal("debt"); }} style={{ fontSize:12, color:"var(--accent)", background:"none", border:"none", cursor:"pointer" }}>✎</button>
+                      <button type="button" onClick={()=>{ setDebtEditId(d.id); setDebtForm({ name:d.name, total:String(d.total), paid:String(d.paid), emi:String(d.emi), dueDay:d.dueDay?String(d.dueDay):"", interest:d.interest?String(d.interest):"" }); setModal("debt"); }} style={{ fontSize:12, color:"var(--accent)", background:"none", border:"none", cursor:"pointer" }}>✎</button>
                       <span onClick={()=>handleDeleteDebt(d.id)} style={{ fontSize:18, color:"var(--red)", cursor:"pointer", opacity:0.4 }}>×</span>
                     </div>
                   </div>
@@ -2136,6 +2139,7 @@ Tarpor Publish চাপো.`}
                   <FormField label="Monthly EMI"><input style={S.input} type="number" value={debtForm.emi} onChange={(e) => setDebtForm((p) => ({ ...p, emi: e.target.value }))} /></FormField>
                   <FormField label="Due day (1-31)"><input style={S.input} type="number" min={1} max={31} value={debtForm.dueDay} onChange={(e) => setDebtForm((p) => ({ ...p, dueDay: e.target.value }))} /></FormField>
                 </div>
+                <FormField label="Interest rate (%/year, optional)"><input style={S.input} type="number" value={debtForm.interest} onChange={(e) => setDebtForm((p) => ({ ...p, interest: e.target.value }))} placeholder="0" /></FormField>
               </div>
               <ModalActions onCancel={() => setModal(null)} onSave={handleSaveDebt} />
             </>}
