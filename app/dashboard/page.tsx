@@ -44,6 +44,7 @@ const CURRENCIES: Record<string, string> = { BDT: "৳", USD: "$", EUR: "€", G
 const todayStr = () => new Date().toISOString().slice(0, 10);
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 const catColor = (cat: string) => ({ Food:"#7c6fff",Transport:"#2dd4bf",Bills:"#fbbf24",Shopping:"#f472b6",Health:"#34d399",Education:"#60a5fa",Entertainment:"#f87171" }[cat] || "#888");
+const catIcon = (cat: string) => ({ Food:"🍽️",Transport:"🚌",Bills:"🧾",Shopping:"🛍️",Health:"❤️‍🩹",Education:"📚",Entertainment:"🎬" }[cat] || "💸");
 const catTag = (cat: string) => ({ Food:"food",Transport:"transport",Bills:"bills",Shopping:"shopping",Health:"health",Education:"education",Entertainment:"entertainment" }[cat] || "custom");
 const subMonthly = (s: Subscription) => (s.cycle === "yearly" ? s.amount / 12 : s.amount);
 
@@ -412,6 +413,13 @@ export default function Dashboard() {
     setExpenseEditId(null);
     setExpForm({ amount:"", cat:"Food", desc:"", date:todayStr(), method:"Cash" });
     setModal("expense");
+  }
+
+  async function quickAddExpense(desc: string, cat: string, amount: number) {
+    const mid = activeMonth?.id;
+    if (!user || !mid || !canEdit) return;
+    await DB.addExpense(user.uid, mid, { amount, cat, desc, date: todayStr(), method: "Cash" });
+    loadData();
   }
 
   function openEditExpenseModal(e: Expense) {
@@ -1191,6 +1199,23 @@ Tarpor Publish চাপো.`}
                 {label:"Transactions",value:String(monthExp.length)},
               ].map(m=><div key={m.label} style={S.metricCard}><div style={S.metricLabel}>{m.label}</div><div className="lifeos-metric-value" style={S.metricValue}>{m.value}</div></div>)}
             </div>
+            {canEdit && (
+              <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:14}}>
+                <span style={{fontSize:11,color:"var(--text3)",fontFamily:"monospace",alignSelf:"center",marginRight:2}}>Quick add:</span>
+                {[
+                  {label:"চা",cat:"Food",amount:20,icon:"☕"},
+                  {label:"রিকশা",cat:"Transport",amount:50,icon:"🛺"},
+                  {label:"লাঞ্চ",cat:"Food",amount:120,icon:"🍽️"},
+                  {label:"বাস",cat:"Transport",amount:30,icon:"🚌"},
+                  {label:"রিচার্জ",cat:"Bills",amount:100,icon:"📱"},
+                  {label:"নাস্তা",cat:"Food",amount:50,icon:"🍩"},
+                ].map(qa=>(
+                  <button key={qa.label} type="button" onClick={()=>quickAddExpense(qa.label,qa.cat,qa.amount)} style={{display:"flex",alignItems:"center",gap:6,padding:"7px 12px",borderRadius:20,border:"1px solid var(--border)",background:"var(--bg3)",color:"var(--text2)",cursor:"pointer",fontSize:12,fontFamily:"inherit"}}>
+                    <span>{qa.icon}</span>{qa.label}<span style={{color:"var(--text3)",fontFamily:"monospace"}}>৳{qa.amount}</span>
+                  </button>
+                ))}
+              </div>
+            )}
             <div className="lifeos-grid2" style={S.grid2}>
               <div style={S.card}>
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:10,marginBottom:10}}>
@@ -1201,7 +1226,16 @@ Tarpor Publish চাপো.`}
                   const q=expSearch.trim().toLowerCase();
                   const list=q?expenses.filter(e=>[e.desc,e.cat,e.method,String(e.amount)].some(v=>String(v||"").toLowerCase().includes(q))):expenses;
                   if(!list.length) return <Empty icon="🧾" text={q?"Kichu meleni — onno keyword try koro":"Kono expense nei. Add koro!"}/>;
-                  return list.map(e=><ExpItem key={e.id} e={e} canEdit={canEdit} onEdit={openEditExpenseModal} onDelete={handleDeleteExpense}/>);
+                  const yd=new Date(); yd.setDate(yd.getDate()-1); const ystr=yd.toISOString().slice(0,10); const tstr=todayStr();
+                  const labelFor=(d:string)=> d===tstr?"Aj":d===ystr?"Kal":d;
+                  const groups:{label:string;items:Expense[]}[]=[];
+                  list.forEach(e=>{ const lab=labelFor(e.date); const g=groups.find(x=>x.label===lab); if(g) g.items.push(e); else groups.push({label:lab,items:[e]}); });
+                  return groups.map(g=>(
+                    <div key={g.label}>
+                      <div style={{fontSize:10,color:"var(--text3)",fontFamily:"monospace",textTransform:"uppercase",letterSpacing:"0.08em",margin:"12px 0 2px"}}>{g.label} · {fmt(g.items.reduce((s,e)=>s+e.amount,0))}</div>
+                      {g.items.map(e=><ExpItem key={e.id} e={e} canEdit={canEdit} onEdit={openEditExpenseModal} onDelete={handleDeleteExpense}/>)}
+                    </div>
+                  ));
                 })()}
               </div>
               <div style={S.card}>
@@ -1419,6 +1453,23 @@ Tarpor Publish চাপো.`}
                 </div>
               ))}
             </div>
+            {openLending.length > 0 && (() => {
+              const byPerson: Record<string, number> = {};
+              lending.filter(l => l.status !== "completed").forEach(l => { byPerson[l.person] = (byPerson[l.person] || 0) + (l.direction === "lent" ? l.amount : -l.amount); });
+              const rows = Object.entries(byPerson).filter(([, v]) => v !== 0).sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]));
+              if (!rows.length) return null;
+              return (
+                <div style={{ ...S.card, marginBottom: 14 }}>
+                  <div style={S.sectionTitle}>Person onujaie — net</div>
+                  {rows.map(([person, net]) => (
+                    <div key={person} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "7px 0", borderBottom: "1px solid var(--border)" }}>
+                      <span style={{ fontSize: 13 }}>{person}</span>
+                      <span style={{ fontSize: 12, fontFamily: "monospace", color: net >= 0 ? "var(--green)" : "var(--red)" }}>{net >= 0 ? `Amar debe ${fmt(net)}` : `Ami debo ${fmt(-net)}`}</span>
+                    </div>
+                  ))}
+                </div>
+              );
+            })()}
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(280px,1fr))", gap: 14 }}>
               {sortUrgentFirst(
                 lending.filter((l) => {
@@ -1742,6 +1793,17 @@ Tarpor Publish চাপো.`}
               </div>
               <div style={S.card}>
                 <div style={S.sectionTitle}>Mood History</div>
+                {moods.length>1 && (
+                  <div style={{marginBottom:14}}>
+                    <div style={{display:"flex",alignItems:"flex-end",gap:3,height:44}}>
+                      {moods.slice(0,20).slice().reverse().map(m=>{
+                        const colors=["","#f87171","#fbbf24","#9ca3af","#60a5fa","#34d399"];
+                        return <div key={m.id} title={`${m.label} · ${m.date}`} style={{flex:1,height:`${m.mood*18+10}%`,background:colors[m.mood]||"#9ca3af",borderRadius:2,minWidth:4}}/>;
+                      })}
+                    </div>
+                    <div style={{fontSize:9,color:"var(--text3)",fontFamily:"monospace",marginTop:4,textAlign:"right"}}>recent {Math.min(20,moods.length)} moods →</div>
+                  </div>
+                )}
                 <div style={{maxHeight:320,overflowY:"auto",display:"flex",flexDirection:"column",gap:8}}>
                   {moods.slice(0,10).map(m=>{
                     const emojis=["","😞","😕","😐","🙂","😄"];
@@ -2178,7 +2240,7 @@ function Tag({ cat }: { cat: string }) {
 function ExpItem({ e, onEdit, onDelete, canEdit = true }: { e: Expense; onEdit: (e: Expense)=>void; onDelete: (id:string)=>void; canEdit?: boolean }) {
   return (
     <div style={{display:"flex",alignItems:"center",gap:12,padding:"9px 0",borderBottom:"1px solid var(--border)"}}>
-      <div style={{width:8,height:8,borderRadius:"50%",background:catColor(e.cat),flexShrink:0}}/>
+      <div style={{width:28,height:28,borderRadius:"50%",background:"var(--bg4)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,flexShrink:0,borderLeft:`2px solid ${catColor(e.cat)}`}}>{catIcon(e.cat)}</div>
       <div style={{flex:1,minWidth:0}}>
         <div style={{fontSize:13,color:"var(--text)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{e.desc}</div>
         <div style={{fontSize:11,color:"var(--text3)",marginTop:1}}><Tag cat={e.cat}/> · {e.method||"Cash"}</div>
