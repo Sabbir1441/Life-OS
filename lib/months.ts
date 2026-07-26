@@ -267,6 +267,21 @@ export async function saveMonthSummary(uid: string, monthId: string, summary: Mo
   });
 }
 
+export async function getMonthSummary(uid: string, monthId: string): Promise<MonthSummary | null> {
+  const snap = await getDoc(doc(db, "users", uid, "months", monthId, "settings", "summary"));
+  if (!snap.exists()) return null;
+  const d = snap.data() as Partial<MonthSummary>;
+  return {
+    income: d.income ?? 0,
+    spent: d.spent ?? 0,
+    remaining: d.remaining ?? 0,
+    expenseCount: d.expenseCount ?? 0,
+    goalCount: d.goalCount ?? 0,
+    tasksDone: d.tasksDone ?? 0,
+    tasksTotal: d.tasksTotal ?? 0,
+  };
+}
+
 export async function copyPlannerFromMonth(
   uid: string,
   fromMonthId: string,

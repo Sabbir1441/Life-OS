@@ -26,7 +26,7 @@ type Habit = { id: string; name: string; freq: number; color: string };
 type MoodLog = { id: string; mood: number; label: string; note: string; energy: number; date: string };
 type Subscription = { id: string; name: string; amount: number; cycle: "monthly" | "yearly"; note?: string; nextBill?: string; cat?: string };
 type Debt = { id: string; name: string; total: number; paid: number; emi: number; dueDay?: number; interest?: number };
-type Todo = { id: string; title: string; note?: string; priority: "low" | "medium" | "high"; dueDate?: string; done: boolean; urgent?: boolean };
+type Todo = { id: string; title: string; note?: string; priority: "low" | "medium" | "high"; dueDate?: string; done: boolean; urgent?: boolean; subtasks?: { text: string; done: boolean }[] };
 type Lending = {
   id: string;
   person: string;
@@ -114,11 +114,12 @@ export default function Dashboard() {
   const [debts, setDebts] = useState<Debt[]>([]);
   const [debtForm, setDebtForm] = useState({ name:"", total:"", paid:"", emi:"", dueDay:"", interest:"" });
   const [debtEditId, setDebtEditId] = useState<string | null>(null);
-  const [todoForm, setTodoForm] = useState({ title: "", note: "", priority: "medium" as Todo["priority"], dueDate: "", urgent: false });
+  const [todoForm, setTodoForm] = useState({ title: "", note: "", priority: "medium" as Todo["priority"], dueDate: "", urgent: false, subtasks: "" });
   const [todoEditId, setTodoEditId] = useState<string | null>(null);
   const [lendingForm, setLendingForm] = useState({ person: "", amount: "", direction: "borrowed" as Lending["direction"], dueDate: "", note: "", urgent: false });
   const [lendingEditId, setLendingEditId] = useState<string | null>(null);
   const [closeSummary, setCloseSummary] = useState<MonthSummary | null>(null);
+  const [prevSummary, setPrevSummary] = useState<{ label: string; summary: MonthSummary } | null>(null);
   const [copyRoutine, setCopyRoutine] = useState(true);
   const [copyHabitsOpt, setCopyHabitsOpt] = useState(true);
   const [currencyChoice, setCurrencyChoice] = useState("BDT");
@@ -450,6 +451,21 @@ export default function Dashboard() {
   }
 
   useEffect(() => {
+    if (activePage !== "report" || !user || !activeMonth) return;
+    const av = activeMonth.year * 12 + activeMonth.month;
+    const prev = months
+      .filter((m) => m.id !== activeMonth.id && (m.year * 12 + m.month) < av)
+      .sort((a, b) => (b.year * 12 + b.month) - (a.year * 12 + a.month))[0];
+    if (!prev) { setPrevSummary(null); return; }
+    let cancelled = false;
+    Months.getMonthSummary(user.uid, prev.id).then((s) => {
+      if (cancelled) return;
+      setPrevSummary(s ? { label: prev.label, summary: s } : null);
+    });
+    return () => { cancelled = true; };
+  }, [activePage, user, activeMonth, months]);
+
+  useEffect(() => {
     function onKey(e: KeyboardEvent) {
       const t = e.target as HTMLElement;
       if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable)) return;
@@ -571,31 +587,37 @@ export default function Dashboard() {
 
   function openNewTodoModal() {
     setTodoEditId(null);
-    setTodoForm({ title: "", note: "", priority: "medium", dueDate: "", urgent: false });
+    setTodoForm({ title: "", note: "", priority: "medium", dueDate: "", urgent: false, subtasks: "" });
     setModal("todo");
   }
 
   function openEditTodoModal(t: Todo) {
     setTodoEditId(t.id);
-    setTodoForm({ title: t.title, note: t.note || "", priority: t.priority, dueDate: t.dueDate || "", urgent: Boolean(t.urgent) });
+    setTodoForm({ title: t.title, note: t.note || "", priority: t.priority, dueDate: t.dueDate || "", urgent: Boolean(t.urgent), subtasks: (t.subtasks || []).map((s) => s.text).join("\n") });
     setModal("todo");
   }
 
   async function handleSaveTodo() {
     if (!user || !todoForm.title.trim()) return;
+    const existingSubs = todoEditId ? (todos.find((x) => x.id === todoEditId)?.subtasks || []) : [];
+    const subtasks = todoForm.subtasks.split("\n").map((s) => s.trim()).filter(Boolean).map((text) => {
+      const prev = existingSubs.find((e) => e.text === text);
+      return { text, done: prev ? prev.done : false };
+    });
     const payload = {
       title: todoForm.title.trim(),
       note: todoForm.note.trim() || undefined,
       priority: todoForm.priority,
       dueDate: todoForm.dueDate || undefined,
       urgent: todoForm.urgent,
+      subtasks,
     };
     if (todoEditId) {
       await DB.updateTodo(user.uid, todoEditId, payload);
     } else {
       await DB.addTodo(user.uid, payload);
     }
-    setTodoForm({ title: "", note: "", priority: "medium", dueDate: "", urgent: false });
+    setTodoForm({ title: "", note: "", priority: "medium", dueDate: "", urgent: false, subtasks: "" });
     setTodoEditId(null);
     setModal(null);
     loadData();
@@ -607,6 +629,15 @@ export default function Dashboard() {
     if (!t) return;
     await DB.updateTodo(user.uid, id, { done: !t.done });
     setTodos((prev) => prev.map((x) => (x.id === id ? { ...x, done: !x.done } : x)));
+  }
+
+  async function handleToggleSubtask(todoId: string, index: number) {
+    if (!user) return;
+    const t = todos.find((x) => x.id === todoId);
+    if (!t || !t.subtasks) return;
+    const subtasks = t.subtasks.map((s, i) => (i === index ? { ...s, done: !s.done } : s));
+    setTodos((prev) => prev.map((x) => (x.id === todoId ? { ...x, subtasks } : x)));
+    await DB.updateTodo(user.uid, todoId, { subtasks });
   }
 
   async function handleDeleteTodo(id: string) {
@@ -1678,6 +1709,17 @@ Tarpor Publish চাপো.`}
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ fontSize: 14, fontWeight: 500, textDecoration: t.done ? "line-through" : "none" }}>{t.title}</div>
                       {t.note && <div style={{ fontSize: 12, color: "var(--text3)", marginTop: 4 }}>{t.note}</div>}
+                      {t.subtasks && t.subtasks.length > 0 && (
+                        <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 4 }}>
+                          {t.subtasks.map((s, i) => (
+                            <div key={i} onClick={(e) => { e.stopPropagation(); handleToggleSubtask(t.id, i); }} style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+                              <div style={{ width: 14, height: 14, borderRadius: 4, border: "1.5px solid", borderColor: s.done ? "var(--green)" : "var(--border2)", background: s.done ? "var(--green)" : "transparent", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>{s.done && <span style={{ fontSize: 9, color: "#fff" }}>✓</span>}</div>
+                              <span style={{ fontSize: 12, color: "var(--text2)", textDecoration: s.done ? "line-through" : "none" }}>{s.text}</span>
+                            </div>
+                          ))}
+                          <div style={{ fontSize: 9, color: "var(--text3)", fontFamily: "monospace" }}>{t.subtasks.filter((s) => s.done).length}/{t.subtasks.length} done</div>
+                        </div>
+                      )}
                       <div style={{ display: "flex", gap: 8, marginTop: 6, flexWrap: "wrap" }}>
                         {t.urgent && <span className="lifeos-urgent-pill">URGENT</span>}
                         {t.dueDate && <span style={{ fontSize: 10, color: deadlineLabel(t.dueDate, today) === "Overdue" ? "var(--red)" : "var(--text3)", fontFamily: "monospace" }}>{deadlineLabel(t.dueDate, today)}</span>}
@@ -1970,6 +2012,23 @@ Tarpor Publish চাপো.`}
                 </div>
               ))}
             </div>
+            {prevSummary && (
+              <div style={{...S.card, marginBottom:16}}>
+                <div style={S.sectionTitle}>vs {prevSummary.label}</div>
+                {[
+                  {label:"Income", now:totalIncome, prev:prevSummary.summary.income, spendMetric:false},
+                  {label:"Spent", now:totalSpent, prev:prevSummary.summary.spent, spendMetric:true},
+                  {label:"Saved", now:Math.max(0,totalIncome-totalSpent), prev:prevSummary.summary.remaining, spendMetric:false},
+                ].map(r=>{
+                  const diff=r.now-r.prev; const up=diff>=0;
+                  const good = r.spendMetric ? !up : up;
+                  return <div key={r.label} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 0",borderBottom:"1px solid var(--border)"}}>
+                    <span style={{fontSize:13}}>{r.label}</span>
+                    <span style={{fontFamily:"monospace",fontSize:12}}>{fmt(r.now)} <span style={{color:"var(--text3)"}}>vs {fmt(r.prev)}</span> <span style={{color:good?"var(--green)":"var(--red)"}}>{up?"▲":"▼"} {fmt(Math.abs(diff))}</span></span>
+                  </div>;
+                })}
+              </div>
+            )}
             {monthExp.length > 0 && (
               <div style={{...S.card, marginBottom:16}}>
                 <div style={S.sectionTitle}>Spending Breakdown</div>
@@ -2286,6 +2345,9 @@ Tarpor Publish চাপো.`}
                 </FormField>
                 <FormField label="Note (optional)">
                   <textarea style={{ ...S.input, resize: "none", minHeight: 72 }} value={todoForm.note} onChange={(e) => setTodoForm((p) => ({ ...p, note: e.target.value }))} placeholder="Details..." />
+                </FormField>
+                <FormField label="Sub-tasks (each line = 1 item)">
+                  <textarea style={{ ...S.input, resize: "none", minHeight: 72 }} value={todoForm.subtasks} onChange={(e) => setTodoForm((p) => ({ ...p, subtasks: e.target.value }))} placeholder={"Step 1\nStep 2\nStep 3"} />
                 </FormField>
                 <div className="lifeos-form-grid-2">
                   <FormField label="Priority">
