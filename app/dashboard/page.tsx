@@ -102,6 +102,7 @@ export default function Dashboard() {
   // Form states
   const [expForm, setExpForm] = useState({ amount:"", cat:"Food", desc:"", date:todayStr(), method:"Cash" });
   const [expenseEditId, setExpenseEditId] = useState<string | null>(null);
+  const [expSearch, setExpSearch] = useState("");
   const [incForm, setIncForm] = useState({ name:"", amount:"", type:"fixed" });
   const [incomeEditId, setIncomeEditId] = useState<string | null>(null);
   const [debts, setDebts] = useState<Debt[]>([]);
@@ -783,9 +784,14 @@ export default function Dashboard() {
     const cats: Record<string,number> = {};
     monthExp.forEach(e => { cats[e.cat] = (cats[e.cat]||0) + e.amount; });
 
-    const system = `You are a friendly personal finance and life advisor for a Bangladeshi user. Speak in Banglish (Bangla + English mixed). Be like a smart helpful friend.
-Planner month: ${monthLabel}${canEdit ? " (active)" : " (closed/archive)"}. Income ${fmt(totalIncome)} from ${income.length} sources. Spent: ${fmt(totalSpent)} (${totalIncome ? Math.round(totalSpent/totalIncome*100) : 0}% of income). Remaining: ${fmt(Math.max(0,remaining))}. Top spending: ${JSON.stringify(cats)}. Subscriptions (~per month): ${fmt(totalSubMonthly)} (${subscriptions.length} plans). Savings goals: ${goals.map(g=>g.name+"("+Math.round(g.current/g.target*100)+"%done)").join(", ")||"none"}. Active habits: ${habits.map(h=>h.name).join(", ")||"none"}. Tasks: ${tasks.length}.
-Give practical, specific, actionable advice. Be encouraging. Keep responses concise. Use emojis occasionally.`;
+    const openTodos = todos.filter(t => !t.done).length;
+    const lentOut = lending.filter(l => l.direction === "lent" && l.status !== "completed").reduce((s,l)=>s+l.amount,0);
+    const borrowed = lending.filter(l => l.direction === "borrowed" && l.status !== "completed").reduce((s,l)=>s+l.amount,0);
+    const savingsRate = totalIncome ? Math.round(Math.max(0,remaining)/totalIncome*100) : 0;
+
+    const system = `You are a friendly, sharp personal finance and life advisor for a Bangladeshi user. Speak in Banglish (Bangla + English mixed). Be like a smart, caring friend who gives honest, specific advice.
+Planner month: ${monthLabel}${canEdit ? " (active)" : " (closed/archive)"}. Income ${fmt(totalIncome)} from ${income.length} sources. Spent: ${fmt(totalSpent)} (${totalIncome ? Math.round(totalSpent/totalIncome*100) : 0}% of income). Remaining: ${fmt(Math.max(0,remaining))} (savings rate ${savingsRate}%). Top spending: ${JSON.stringify(cats)}. Subscriptions (~per month): ${fmt(totalSubMonthly)} (${subscriptions.length} plans). Debts remaining: ${fmt(totalDebtRemaining)} (${debts.length} loans). Dhar — diyechi ${fmt(lentOut)}, niyechi ${fmt(borrowed)}. Savings goals: ${goals.map(g=>g.name+"("+Math.round(g.current/g.target*100)+"%done)").join(", ")||"none"}. Active habits: ${habits.map(h=>h.name).join(", ")||"none"}. Routine tasks: ${tasks.length}. Pending todos: ${openTodos}.
+Give practical, specific, actionable advice grounded in the numbers above. When relevant, point out risks (overspending, high debt, low savings) and concrete next steps. Be encouraging but honest. Keep responses concise and skimmable. Use emojis occasionally.`;
 
     const newHistory = [...aiHistory, userMsg];
 
@@ -1187,9 +1193,16 @@ Tarpor Publish চাপো.`}
             </div>
             <div className="lifeos-grid2" style={S.grid2}>
               <div style={S.card}>
-                <div style={S.sectionTitle}>All Transactions</div>
-                {expenses.map(e=><ExpItem key={e.id} e={e} canEdit={canEdit} onEdit={openEditExpenseModal} onDelete={handleDeleteExpense}/>)}
-                {!expenses.length && <Empty icon="🧾" text="Kono expense nei. Add koro!"/>}
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:10,marginBottom:10}}>
+                  <div style={{...S.sectionTitle,marginBottom:0}}>All Transactions</div>
+                  <input style={{...S.input,maxWidth:180,padding:"6px 10px",fontSize:12}} placeholder="🔍 Khojo..." value={expSearch} onChange={e=>setExpSearch(e.target.value)}/>
+                </div>
+                {(()=>{
+                  const q=expSearch.trim().toLowerCase();
+                  const list=q?expenses.filter(e=>[e.desc,e.cat,e.method,String(e.amount)].some(v=>String(v||"").toLowerCase().includes(q))):expenses;
+                  if(!list.length) return <Empty icon="🧾" text={q?"Kichu meleni — onno keyword try koro":"Kono expense nei. Add koro!"}/>;
+                  return list.map(e=><ExpItem key={e.id} e={e} canEdit={canEdit} onEdit={openEditExpenseModal} onDelete={handleDeleteExpense}/>);
+                })()}
               </div>
               <div style={S.card}>
                 <div style={S.sectionTitle}>By Category</div>
@@ -1289,9 +1302,9 @@ Tarpor Publish চাপো.`}
             <div style={S.metricsGrid}>
               {[
                 { label: "~Monthly total", value: fmt(totalSubMonthly) },
+                { label: "Per year total", value: fmt(totalSubMonthly * 12) },
                 { label: "Active plans", value: String(subscriptions.length) },
-                { label: "Yearly (count)", value: String(subscriptions.filter((s) => s.cycle === "yearly").length) },
-                { label: "Monthly (count)", value: String(subscriptions.filter((s) => s.cycle === "monthly").length) },
+                { label: "Monthly / Yearly", value: `${subscriptions.filter((s) => s.cycle === "monthly").length} / ${subscriptions.filter((s) => s.cycle === "yearly").length}` },
               ].map((m) => (
                 <div key={m.label} style={S.metricCard}>
                   <div style={S.metricLabel}>{m.label}</div>
@@ -1345,6 +1358,8 @@ Tarpor Publish চাপো.`}
             <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(260px,1fr))", gap:14 }}>
               {debts.map((d) => {
                 const pct = d.total ? Math.min(100, Math.round((d.paid / d.total) * 100)) : 0;
+                const remain = Math.max(0, d.total - d.paid);
+                const monthsLeft = d.emi > 0 && remain > 0 ? Math.ceil(remain / d.emi) : null;
                 return (
                   <div key={d.id} style={S.card}>
                     <div style={{ fontSize:14, fontWeight:500, marginBottom:8 }}>{d.name}</div>
@@ -1354,7 +1369,13 @@ Tarpor Publish চাপো.`}
                     <div style={{ height:6, background:"var(--bg4)", borderRadius:3, overflow:"hidden", marginBottom:8 }}>
                       <div style={{ height:"100%", width:`${pct}%`, background:"var(--teal)", borderRadius:3 }} />
                     </div>
-                    {d.dueDay && <div style={{ fontSize:10, color:"var(--amber)", fontFamily:"monospace" }}>Due day: {d.dueDay}</div>}
+                    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", flexWrap:"wrap", gap:6 }}>
+                      <span style={{ fontSize:10, color:"var(--text3)", fontFamily:"monospace" }}>Baki {fmt(remain)}</span>
+                      {remain <= 0
+                        ? <span style={{ fontSize:10, color:"var(--green)", fontFamily:"monospace" }}>SHESH ✓</span>
+                        : monthsLeft && <span style={{ fontSize:10, color:"var(--teal)", fontFamily:"monospace" }}>≈ {monthsLeft} mash baki</span>}
+                    </div>
+                    {d.dueDay && <div style={{ fontSize:10, color:"var(--amber)", fontFamily:"monospace", marginTop:4 }}>Due day: {d.dueDay}</div>}
                     <div style={{ display:"flex", justifyContent:"flex-end", gap:8, marginTop:10 }}>
                       <button type="button" onClick={()=>{ setDebtEditId(d.id); setDebtForm({ name:d.name, total:String(d.total), paid:String(d.paid), emi:String(d.emi), dueDay:d.dueDay?String(d.dueDay):"" }); setModal("debt"); }} style={{ fontSize:12, color:"var(--accent)", background:"none", border:"none", cursor:"pointer" }}>✎</button>
                       <span onClick={()=>handleDeleteDebt(d.id)} style={{ fontSize:18, color:"var(--red)", cursor:"pointer", opacity:0.4 }}>×</span>
@@ -1670,10 +1691,17 @@ Tarpor Publish চাপো.`}
               {habits.map(h=>{
                 const days: string[]=[];
                 for(let i=6;i>=0;i--){const d=new Date();d.setDate(d.getDate()-i);days.push(d.toISOString().slice(0,10));}
+                const logSet=new Set(habitLogs[h.id]||[]);
+                let streak=0; const sd=new Date();
+                if(!logSet.has(sd.toISOString().slice(0,10))) sd.setDate(sd.getDate()-1);
+                while(logSet.has(sd.toISOString().slice(0,10))){streak++; sd.setDate(sd.getDate()-1);}
                 return <div key={h.id} className="lifeos-habit-row" style={{display:"flex",alignItems:"center",gap:10,padding:"10px 0",borderBottom:"1px solid var(--border)"}}>
                   <div style={{flex:1,minWidth:0}}>
                     <div style={{fontSize:13}}>{h.name}</div>
-                    <div style={{fontSize:10,color:"var(--amber)",fontFamily:"monospace"}}>{h.freq}x/week</div>
+                    <div style={{fontSize:10,color:"var(--amber)",fontFamily:"monospace",display:"flex",gap:8,alignItems:"center"}}>
+                      <span>{h.freq}x/week</span>
+                      {streak>0 && <span style={{color:"var(--teal)"}}>🔥 {streak} din streak</span>}
+                    </div>
                   </div>
                   <div className="lifeos-habit-days">
                     {days.map(d=>{
