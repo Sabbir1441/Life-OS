@@ -21,6 +21,19 @@
   --radius-sm: 8px;
 }
 
+:root[data-theme="light"] {
+  --bg: #f5f6fb;
+  --bg2: #ffffff;
+  --bg3: #f0f1f7;
+  --bg4: #e3e5ef;
+  --border: rgba(0,0,0,0.08);
+  --border2: rgba(0,0,0,0.14);
+  --text: #1b1b2b;
+  --text2: #55556f;
+  --text3: #8a8aa5;
+  --accent-glow: rgba(124,111,255,0.12);
+}
+
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html, body { height: 100%; background: var(--bg); color: var(--text); font-size: 14px; }
 

@@ -68,6 +68,7 @@ export default function Dashboard() {
   const [dataLoading, setDataLoading] = useState(true);
   const [loadError, setLoadError] = useState<"permissions" | "other" | null>(null);
   const [navOpen, setNavOpen] = useState(false);
+  const [theme, setTheme] = useState<"dark" | "light">("dark");
   const [months, setMonths] = useState<PlannerMonth[]>([]);
   const [activeMonth, setActiveMonth] = useState<PlannerMonth | null>(null);
   const [monthMenuOpen, setMonthMenuOpen] = useState(false);
@@ -420,6 +421,20 @@ export default function Dashboard() {
     if (!user || !mid || !canEdit) return;
     await DB.addExpense(user.uid, mid, { amount, cat, desc, date: todayStr(), method: "Cash" });
     loadData();
+  }
+
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem("lifeos-theme");
+      if (saved === "light" || saved === "dark") { setTheme(saved); document.documentElement.setAttribute("data-theme", saved); }
+    } catch {}
+  }, []);
+
+  function toggleTheme() {
+    const next = theme === "dark" ? "light" : "dark";
+    setTheme(next);
+    document.documentElement.setAttribute("data-theme", next);
+    try { localStorage.setItem("lifeos-theme", next); } catch {}
   }
 
   function openEditExpenseModal(e: Expense) {
@@ -992,6 +1007,9 @@ Tarpor Publish চাপো.`}
             </div>
           ))}
         </nav>
+        <div style={S.logout} onClick={toggleTheme}>
+          {theme === "dark" ? "☀ Light mode" : "☾ Dark mode"}
+        </div>
         <div style={S.logout} onClick={async()=>{await logout();router.replace("/login");}}>
           ⎋ Logout
         </div>
