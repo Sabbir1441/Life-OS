@@ -1,8 +1,21 @@
 import {
   collection, doc, addDoc, setDoc, getDoc, getDocs,
-  deleteDoc, updateDoc, query, orderBy, serverTimestamp
+  deleteDoc, updateDoc, query, orderBy, serverTimestamp, onSnapshot
 } from "firebase/firestore";
 import { db } from "./firebase";
+
+// ─── REAL-TIME ──────────────────────────────────────
+// Subscribe to a global collection under users/{uid}/{name}.
+// Calls onChange whenever the collection changes (remote or local).
+// Returns an unsubscribe function. Errors are swallowed so a denied
+// listener never crashes the app.
+export function subscribeGlobal(uid: string, name: string, onChange: () => void) {
+  return onSnapshot(
+    collection(db, "users", uid, name),
+    () => onChange(),
+    () => {}
+  );
+}
 
 const defaultBudget = {
   Food: 8000, Transport: 4000, Bills: 6000,

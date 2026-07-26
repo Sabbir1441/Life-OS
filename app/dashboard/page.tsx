@@ -231,6 +231,21 @@ export default function Dashboard() {
     if (user) loadData();
   }, [user, loading, router, loadData]);
 
+  // Real-time sync: listen to global collections and refresh on remote changes.
+  useEffect(() => {
+    if (!user) return;
+    const names = ["todos", "lending", "debts", "subscriptions"];
+    const firstFire: Record<string, boolean> = {};
+    names.forEach((n) => { firstFire[n] = true; });
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const scheduleReload = () => { if (timer) clearTimeout(timer); timer = setTimeout(() => loadData(), 400); };
+    const unsubs = names.map((n) => DB.subscribeGlobal(user.uid, n, () => {
+      if (firstFire[n]) { firstFire[n] = false; return; }
+      scheduleReload();
+    }));
+    return () => { if (timer) clearTimeout(timer); unsubs.forEach((u) => u()); };
+  }, [user, loadData]);
+
   useEffect(() => {
     if (!modal) {
       setExpenseEditId(null);
