@@ -300,6 +300,17 @@ export async function copyPlannerFromMonth(
   }
 }
 
+export async function copyRecurringExpenses(uid: string, fromMonthId: string, toMonthId: string, newDate: string) {
+  const exps = (await DB.getExpenses(uid, fromMonthId)) as Record<string, unknown>[];
+  const recurring = exps.filter((e) => e.recurring === true);
+  for (const e of recurring) {
+    await DB.addExpense(uid, toMonthId, {
+      amount: e.amount, cat: e.cat, desc: e.desc, method: e.method || "Cash",
+      date: newDate, recurring: true,
+    });
+  }
+}
+
 export async function startCustomMonth(
   uid: string,
   opts: MonthCreateOpts,
@@ -310,6 +321,9 @@ export async function startCustomMonth(
   const created = await createNamedMonth(uid, opts, "active");
   if (copyFromId && copyOpts && (copyOpts.tasks || copyOpts.habits)) {
     await copyPlannerFromMonth(uid, copyFromId, created.id, copyOpts);
+  }
+  if (copyFromId) {
+    await copyRecurringExpenses(uid, copyFromId, created.id, opts.startDate);
   }
   await setActiveMonthId(uid, created.id);
   return created;
@@ -342,6 +356,7 @@ export async function closeMonthAndStartNext(
   if (copyOpts && (copyOpts.tasks || copyOpts.habits)) {
     await copyPlannerFromMonth(uid, currentMonthId, newMonth.id, copyOpts);
   }
+  await copyRecurringExpenses(uid, currentMonthId, newMonth.id, startDate);
   await setActiveMonthId(uid, newMonth.id);
   return { closed: { ...current, status: "closed" }, next: newMonth, summary };
 }

@@ -18,7 +18,7 @@ import { sortUrgentFirst, splitUrgentNormal } from "@/lib/sort-priority";
 import { MorningBriefScheduler } from "@/components/morning-brief-scheduler";
 
 // ─── TYPES ───────────────────────────────────────────
-type Expense = { id: string; amount: number; cat: string; desc: string; date: string; method: string };
+type Expense = { id: string; amount: number; cat: string; desc: string; date: string; method: string; recurring?: boolean };
 type Income = { id: string; name: string; amount: number; type: string; receiveDate?: string };
 type Goal = { id: string; name: string; emoji: string; target: number; current: number; deadline?: string };
 type Task = { id: string; name: string; time: string; dur: number; cat: string; done: boolean };
@@ -106,7 +106,7 @@ export default function Dashboard() {
   const [modal, setModal] = useState<string|null>(null);
 
   // Form states
-  const [expForm, setExpForm] = useState({ amount:"", cat:"Food", desc:"", date:todayStr(), method:"Cash" });
+  const [expForm, setExpForm] = useState({ amount:"", cat:"Food", desc:"", date:todayStr(), method:"Cash", recurring:false });
   const [expenseEditId, setExpenseEditId] = useState<string | null>(null);
   const [expSearch, setExpSearch] = useState("");
   const [incForm, setIncForm] = useState({ name:"", amount:"", type:"fixed", receiveDate:"" });
@@ -402,7 +402,7 @@ export default function Dashboard() {
   async function handleSaveExpense() {
     const mid = activeMonth?.id;
     if (!user || !mid || !canEdit || !expForm.amount) return;
-    const newExp = { amount: parseFloat(expForm.amount), cat: expForm.cat, desc: expForm.desc || expForm.cat, date: expForm.date, method: expForm.method };
+    const newExp = { amount: parseFloat(expForm.amount), cat: expForm.cat, desc: expForm.desc || expForm.cat, date: expForm.date, method: expForm.method, recurring: expForm.recurring };
     const wasEdit = !!expenseEditId;
     if (expenseEditId) {
       await DB.updateExpense(user.uid, mid, expenseEditId, newExp);
@@ -410,7 +410,7 @@ export default function Dashboard() {
       await DB.addExpense(user.uid, mid, newExp);
     }
     showToast(wasEdit ? "✓ Kharch update hoyeche" : "✓ Kharch add hoyeche");
-    setExpForm({ amount:"", cat:"Food", desc:"", date:todayStr(), method:"Cash" });
+    setExpForm({ amount:"", cat:"Food", desc:"", date:todayStr(), method:"Cash", recurring:false });
     setExpenseEditId(null);
     setModal(null);
     loadData();
@@ -419,7 +419,7 @@ export default function Dashboard() {
   function openNewExpenseModal() {
     if (!canEdit) return;
     setExpenseEditId(null);
-    setExpForm({ amount:"", cat:"Food", desc:"", date:todayStr(), method:"Cash" });
+    setExpForm({ amount:"", cat:"Food", desc:"", date:todayStr(), method:"Cash", recurring:false });
     setModal("expense");
   }
 
@@ -489,6 +489,7 @@ export default function Dashboard() {
       desc: e.desc,
       date: e.date,
       method: e.method || "Cash",
+      recurring: e.recurring || false,
     });
     setModal("expense");
   }
@@ -2185,6 +2186,10 @@ Tarpor Publish চাপো.`}
                     {["Cash","Bkash","Card","Nagad","Bank"].map(m=><option key={m}>{m}</option>)}
                   </select></FormField>
                 </div>
+                <label style={{display:"flex",alignItems:"center",gap:8,fontSize:12,color:"var(--text2)",cursor:"pointer"}}>
+                  <input type="checkbox" checked={expForm.recurring} onChange={e=>setExpForm(p=>({...p,recurring:e.target.checked}))}/>
+                  🔁 Recurring — protito notun mash e auto add hobe
+                </label>
               </div>
               <ModalActions onCancel={()=>setModal(null)} onSave={handleSaveExpense}/>
             </>}
@@ -2447,7 +2452,7 @@ function ExpItem({ e, onEdit, onDelete, canEdit = true }: { e: Expense; onEdit: 
     <div style={{display:"flex",alignItems:"center",gap:12,padding:"9px 0",borderBottom:"1px solid var(--border)"}}>
       <div style={{width:28,height:28,borderRadius:"50%",background:"var(--bg4)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,flexShrink:0,borderLeft:`2px solid ${catColor(e.cat)}`}}>{catIcon(e.cat)}</div>
       <div style={{flex:1,minWidth:0}}>
-        <div style={{fontSize:13,color:"var(--text)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{e.desc}</div>
+        <div style={{fontSize:13,color:"var(--text)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{e.recurring && <span title="Recurring">🔁 </span>}{e.desc}</div>
         <div style={{fontSize:11,color:"var(--text3)",marginTop:1}}><Tag cat={e.cat}/> · {e.method||"Cash"}</div>
       </div>
       <div style={{textAlign:"right",flexShrink:0}}>
