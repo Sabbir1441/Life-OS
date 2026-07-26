@@ -19,12 +19,12 @@ import { MorningBriefScheduler } from "@/components/morning-brief-scheduler";
 
 // ─── TYPES ───────────────────────────────────────────
 type Expense = { id: string; amount: number; cat: string; desc: string; date: string; method: string };
-type Income = { id: string; name: string; amount: number; type: string };
+type Income = { id: string; name: string; amount: number; type: string; receiveDate?: string };
 type Goal = { id: string; name: string; emoji: string; target: number; current: number; deadline?: string };
 type Task = { id: string; name: string; time: string; dur: number; cat: string; done: boolean };
 type Habit = { id: string; name: string; freq: number; color: string };
 type MoodLog = { id: string; mood: number; label: string; note: string; energy: number; date: string };
-type Subscription = { id: string; name: string; amount: number; cycle: "monthly" | "yearly"; note?: string };
+type Subscription = { id: string; name: string; amount: number; cycle: "monthly" | "yearly"; note?: string; nextBill?: string; cat?: string };
 type Debt = { id: string; name: string; total: number; paid: number; emi: number; dueDay?: number; interest?: number };
 type Todo = { id: string; title: string; note?: string; priority: "low" | "medium" | "high"; dueDate?: string; done: boolean; urgent?: boolean };
 type Lending = {
@@ -45,6 +45,7 @@ const todayStr = () => new Date().toISOString().slice(0, 10);
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 const catColor = (cat: string) => ({ Food:"#7c6fff",Transport:"#2dd4bf",Bills:"#fbbf24",Shopping:"#f472b6",Health:"#34d399",Education:"#60a5fa",Entertainment:"#f87171" }[cat] || "#888");
 const catIcon = (cat: string) => ({ Food:"🍽️",Transport:"🚌",Bills:"🧾",Shopping:"🛍️",Health:"❤️‍🩹",Education:"📚",Entertainment:"🎬" }[cat] || "💸");
+const subIcon = (c?: string) => ({ streaming:"📺",tools:"🛠️",gym:"🏋️",music:"🎵",cloud:"☁️",education:"📚",other:"🔁" }[c || "other"] || "🔁");
 const catTag = (cat: string) => ({ Food:"food",Transport:"transport",Bills:"bills",Shopping:"shopping",Health:"health",Education:"education",Entertainment:"entertainment" }[cat] || "custom");
 const subMonthly = (s: Subscription) => (s.cycle === "yearly" ? s.amount / 12 : s.amount);
 
@@ -106,7 +107,7 @@ export default function Dashboard() {
   const [expForm, setExpForm] = useState({ amount:"", cat:"Food", desc:"", date:todayStr(), method:"Cash" });
   const [expenseEditId, setExpenseEditId] = useState<string | null>(null);
   const [expSearch, setExpSearch] = useState("");
-  const [incForm, setIncForm] = useState({ name:"", amount:"", type:"fixed" });
+  const [incForm, setIncForm] = useState({ name:"", amount:"", type:"fixed", receiveDate:"" });
   const [incomeEditId, setIncomeEditId] = useState<string | null>(null);
   const [debts, setDebts] = useState<Debt[]>([]);
   const [debtForm, setDebtForm] = useState({ name:"", total:"", paid:"", emi:"", dueDay:"", interest:"" });
@@ -119,7 +120,7 @@ export default function Dashboard() {
   const [copyRoutine, setCopyRoutine] = useState(true);
   const [copyHabitsOpt, setCopyHabitsOpt] = useState(true);
   const [currencyChoice, setCurrencyChoice] = useState("BDT");
-  const [subForm, setSubForm] = useState({ name:"", amount:"", cycle:"monthly" as "monthly"|"yearly", note:"" });
+  const [subForm, setSubForm] = useState({ name:"", amount:"", cycle:"monthly" as "monthly"|"yearly", note:"", nextBill:"", cat:"other" });
   const [goalForm, setGoalForm] = useState({ name:"", emoji:"🎯", target:"", current:"", deadline:"" });
   const [taskForm, setTaskForm] = useState({ name:"", time:"09:00", dur:"60", cat:"purple" });
   const [habitForm, setHabitForm] = useState({ name:"", freq:"7", color:"var(--accent)" });
@@ -469,13 +470,13 @@ export default function Dashboard() {
   async function handleSaveIncome() {
     const mid = activeMonth?.id;
     if (!user || !mid || !canEdit || !incForm.name || !incForm.amount) return;
-    const payload = { name: incForm.name, amount: parseFloat(incForm.amount), type: incForm.type };
+    const payload = { name: incForm.name, amount: parseFloat(incForm.amount), type: incForm.type, receiveDate: incForm.receiveDate || null };
     if (incomeEditId) {
       await DB.updateIncome(user.uid, mid, incomeEditId, payload);
     } else {
       await DB.addIncome(user.uid, mid, payload);
     }
-    setIncForm({ name:"", amount:"", type:"fixed" });
+    setIncForm({ name:"", amount:"", type:"fixed", receiveDate:"" });
     setIncomeEditId(null);
     setModal(null);
     loadData();
@@ -484,14 +485,14 @@ export default function Dashboard() {
   function openNewIncomeModal() {
     if (!canEdit) return;
     setIncomeEditId(null);
-    setIncForm({ name:"", amount:"", type:"fixed" });
+    setIncForm({ name:"", amount:"", type:"fixed", receiveDate:"" });
     setModal("income");
   }
 
   function openEditIncomeModal(inc: Income) {
     if (!canEdit) return;
     setIncomeEditId(inc.id);
-    setIncForm({ name: inc.name, amount: String(inc.amount), type: inc.type });
+    setIncForm({ name: inc.name, amount: String(inc.amount), type: inc.type, receiveDate: inc.receiveDate || "" });
     setModal("income");
   }
 
@@ -530,10 +531,13 @@ export default function Dashboard() {
       amount: parseFloat(subForm.amount),
       cycle: subForm.cycle,
       note: subForm.note.trim() || undefined,
+      nextBill: subForm.nextBill || null,
+      cat: subForm.cat || "other",
     });
-    setSubForm({ name:"", amount:"", cycle:"monthly", note:"" });
+    setSubForm({ name:"", amount:"", cycle:"monthly", note:"", nextBill:"", cat:"other" });
     setModal(null);
     loadData();
+    showToast("✓ Subscription add hoyeche");
   }
 
   async function handleDeleteSubscription(id: string) {
@@ -869,8 +873,15 @@ Give practical, specific, actionable advice grounded in the numbers above. When 
 
   if (loading || dataLoading) {
     return (
-      <div style={{display:"flex",alignItems:"center",justifyContent:"center",height:"100vh",background:"var(--bg)"}}>
-        <div style={{fontSize:13,color:"var(--text3)"}}>Loading tomar data...</div>
+      <div style={{padding:28,height:"100vh",background:"var(--bg)",overflow:"hidden"}}>
+        <div className="lifeos-skel" style={{width:180,height:26,borderRadius:8,marginBottom:22}}/>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(160px,1fr))",gap:14,marginBottom:20}}>
+          {[0,1,2,3,4].map(i=><div key={i} className="lifeos-skel" style={{height:80,borderRadius:14}}/>)}
+        </div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
+          {[0,1].map(i=><div key={i} className="lifeos-skel" style={{height:220,borderRadius:14}}/>)}
+        </div>
+        <div style={{textAlign:"center",marginTop:26,fontSize:12,color:"var(--text3)"}}>Loading tomar data...</div>
       </div>
     );
   }
@@ -1371,7 +1382,7 @@ Tarpor Publish চাপো.`}
                   <div style={{fontSize:14,fontWeight:500}}>{inc.name}</div>
                   <div style={{fontSize:26,fontWeight:600,fontFamily:"monospace",letterSpacing:-0.5,margin:"8px 0"}}>{fmt(inc.amount)}</div>
                   <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8}}>
-                    <div style={{fontSize:11,color:"var(--text3)"}}>Per month</div>
+                    <div style={{fontSize:11,color:"var(--text3)"}}>{inc.receiveDate ? `📅 ${inc.receiveDate}` : "Per month"}</div>
                     <div style={{display:"flex",gap:6}}>
                       {canEdit && <button type="button" onClick={()=>openEditIncomeModal(inc)} style={{fontSize:12,color:"var(--accent)",background:"none",border:"none",cursor:"pointer",fontFamily:"inherit"}}>✎</button>}
                       {canEdit && <span onClick={()=>handleDeleteIncome(inc.id)} style={{fontSize:18,color:"var(--red)",cursor:"pointer",opacity:0.4}}>×</span>}
@@ -1409,7 +1420,7 @@ Tarpor Publish চাপো.`}
                   <div style={{ fontSize:10, color:"var(--text3)", textTransform:"uppercase", letterSpacing:"0.08em", fontFamily:"monospace", marginBottom:8 }}>
                     {sub.cycle === "yearly" ? "Yearly plan" : "Monthly"}
                   </div>
-                  <div style={{ fontSize:14, fontWeight:500 }}>{sub.name}</div>
+                  <div style={{ fontSize:14, fontWeight:500, display:"flex", alignItems:"center", gap:6 }}><span>{subIcon(sub.cat)}</span>{sub.name}</div>
                   <div style={{ fontSize:22, fontWeight:600, fontFamily:"monospace", letterSpacing:-0.5, margin:"8px 0" }}>
                     {fmt(sub.amount)}
                     <span style={{ fontSize:12, color:"var(--text3)", fontWeight:400 }}>{sub.cycle === "yearly" ? "/yr" : "/mo"}</span>
@@ -1417,6 +1428,7 @@ Tarpor Publish চাপো.`}
                   <div style={{ fontSize:11, color:"var(--teal)", fontFamily:"monospace", marginBottom:8 }}>
                     ≈ {fmt(subMonthly(sub))} / mo equivalent
                   </div>
+                  {sub.nextBill && <div style={{ fontSize:11, color: sub.nextBill <= todayStr() ? "var(--red)" : "var(--amber)", fontFamily:"monospace", marginBottom:8 }}>Next bill: {sub.nextBill}</div>}
                   {sub.note && <div style={{ fontSize:12, color:"var(--text3)", marginBottom:8 }}>{sub.note}</div>}
                   <div style={{ display:"flex", justifyContent:"flex-end" }}>
                     <span onClick={() => handleDeleteSubscription(sub.id)} style={{ fontSize:18, color:"var(--red)", cursor:"pointer", opacity:0.4 }}>×</span>
@@ -1907,6 +1919,12 @@ Tarpor Publish চাপো.`}
                 </div>
               ))}
             </div>
+            {monthExp.length > 0 && (
+              <div style={{...S.card, marginBottom:16}}>
+                <div style={S.sectionTitle}>Spending Breakdown</div>
+                <CatPie expenses={monthExp}/>
+              </div>
+            )}
             <div className="lifeos-grid2" style={S.grid2}>
               <div style={S.card}>
                 <div style={S.sectionTitle}>Top Spending</div>
@@ -2072,7 +2090,13 @@ Tarpor Publish চাপো.`}
                     <option value="yearly">Per year</option>
                   </select></FormField>
                 </div>
-                <FormField label="Note (optional)"><input style={S.input} value={subForm.note} onChange={e=>setSubForm(p=>({...p,note:e.target.value}))} placeholder="Renewal date, plan name..."/></FormField>
+                <div className="lifeos-form-grid-2">
+                  <FormField label="Category"><select style={S.input} value={subForm.cat} onChange={e=>setSubForm(p=>({...p,cat:e.target.value}))}>
+                    {[["streaming","📺 Streaming"],["tools","🛠️ Tools"],["gym","🏋️ Gym"],["music","🎵 Music"],["cloud","☁️ Cloud"],["education","📚 Education"],["other","🔁 Other"]].map(([v,l])=><option key={v} value={v}>{l}</option>)}
+                  </select></FormField>
+                  <FormField label="Next bill date"><input style={S.input} type="date" value={subForm.nextBill} onChange={e=>setSubForm(p=>({...p,nextBill:e.target.value}))}/></FormField>
+                </div>
+                <FormField label="Note (optional)"><input style={S.input} value={subForm.note} onChange={e=>setSubForm(p=>({...p,note:e.target.value}))} placeholder="Plan name..."/></FormField>
               </div>
               <ModalActions onCancel={()=>setModal(null)} onSave={handleAddSubscription}/>
             </>}
@@ -2087,6 +2111,7 @@ Tarpor Publish চাপো.`}
                     <option value="fixed">Fixed</option><option value="variable">Variable</option><option value="irregular">Irregular</option>
                   </select></FormField>
                 </div>
+                <FormField label="Receive date (optional)"><input style={S.input} type="date" value={incForm.receiveDate} onChange={e=>setIncForm(p=>({...p,receiveDate:e.target.value}))}/></FormField>
               </div>
               <ModalActions onCancel={()=>setModal(null)} onSave={handleSaveIncome}/>
             </>}
@@ -2337,6 +2362,41 @@ function CatBreakdown({ expenses }: { expenses: Expense[] }) {
       </div>
     </div>
   ))}</>;
+}
+
+function CatPie({ expenses }: { expenses: Expense[] }) {
+  const cats: Record<string, number> = {};
+  expenses.forEach(e => { cats[e.cat] = (cats[e.cat] || 0) + e.amount; });
+  const entries = Object.entries(cats).sort((a, b) => b[1] - a[1]);
+  const total = entries.reduce((s, [, v]) => s + v, 0);
+  if (!total) return <Empty icon="🥧" text="Data nei" />;
+  const r = 52, cx = 60, cy = 60; let acc = 0;
+  const seg = entries.map(([cat, amt]) => {
+    const frac = amt / total;
+    const a0 = acc * 2 * Math.PI - Math.PI / 2; acc += frac; const a1 = acc * 2 * Math.PI - Math.PI / 2;
+    const x0 = cx + r * Math.cos(a0), y0 = cy + r * Math.sin(a0), x1 = cx + r * Math.cos(a1), y1 = cy + r * Math.sin(a1);
+    const large = frac > 0.5 ? 1 : 0;
+    const d = entries.length === 1
+      ? `M${cx - r},${cy} a${r},${r} 0 1,0 ${r * 2},0 a${r},${r} 0 1,0 ${-r * 2},0`
+      : `M${cx},${cy} L${x0.toFixed(2)},${y0.toFixed(2)} A${r},${r} 0 ${large} 1 ${x1.toFixed(2)},${y1.toFixed(2)} Z`;
+    return { cat, amt, frac, d };
+  });
+  return (
+    <div style={{ display: "flex", gap: 16, alignItems: "center", flexWrap: "wrap" }}>
+      <svg width="120" height="120" viewBox="0 0 120 120" style={{ flexShrink: 0 }}>
+        {seg.map(s => <path key={s.cat} d={s.d} fill={catColor(s.cat)} stroke="var(--bg2)" strokeWidth="1.5" />)}
+      </svg>
+      <div style={{ flex: 1, minWidth: 130 }}>
+        {seg.map(s => (
+          <div key={s.cat} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, marginBottom: 4 }}>
+            <span style={{ width: 10, height: 10, borderRadius: 2, background: catColor(s.cat), flexShrink: 0 }} />
+            <span style={{ flex: 1 }}>{s.cat}</span>
+            <span style={{ fontFamily: "monospace", color: "var(--text3)" }}>{fmt(s.amt)} · {Math.round(s.frac * 100)}%</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 function Empty({ icon, text }: { icon: string; text: string }) {

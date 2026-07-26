@@ -35,6 +35,8 @@
 }
 
 @keyframes lifeosToastIn { from { opacity: 0; transform: translate(-50%, 12px); } to { opacity: 1; transform: translate(-50%, 0); } }
+.lifeos-skel { background: linear-gradient(90deg, var(--bg3) 25%, var(--bg4) 50%, var(--bg3) 75%); background-size: 200% 100%; animation: lifeosSkel 1.3s ease-in-out infinite; }
+@keyframes lifeosSkel { from { background-position: 200% 0; } to { background-position: -200% 0; } }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html, body { height: 100%; background: var(--bg); color: var(--text); font-size: 14px; }
